@@ -1,0 +1,13 @@
+name = "NonlinearEMKGDoubleNull"
+uuid = "f8ca7f97-6f7d-4bdf-a830-7d10c1e8c4b7"
+authors = ["rn_over contributors"]
+version = "0.1.0"
+
+[compat]
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

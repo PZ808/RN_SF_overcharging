@@ -34,7 +34,10 @@ end
 
 function mrt2013_bump(x, xmin, xmax; alpha=4.0, amplitude=1.0e-2)
     (xmin < x < xmax) || return zero(x)
-    return amplitude * exp(alpha * (inv(x - xmin) - inv(x - xmax) + inv(xmin - xmax)))
+    mid = (xmin + xmax) / 2
+    halfwidth = (xmax - xmin) / 2
+    z = (x - mid) / halfwidth
+    return amplitude * exp(-alpha * z^2 / (1 - z^2))
 end
 
 function initialize_mrt2013_uncharged_ingoing!(st::NLState, g::Grid, ep::EvolutionParams;
