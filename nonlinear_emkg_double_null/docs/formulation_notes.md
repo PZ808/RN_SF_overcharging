@@ -97,4 +97,17 @@ The next physics/code steps are:
 - validate that the fixed-metric small-amplitude limit reproduces Gelles/Pretorius;
 - define apparent horizon, Bondi mass, and horizon charge diagnostics in the double-null gauge.
 
+## Current Diagnostics
+
+`examples/check_uncharged_decay.jl` is currently the strongest positive
+physics check. It uses MRT-style uncharged initial data and fits
+`|phi| ~ V^-1.06` on the horizon-adjacent line, close to the expected
+extremal `V^-1` behavior.
+
+`examples/check_charged_horizon_density.jl` is the charged-sector target
+from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time
+horizon charge-density exponent is `1 - 2s = 0`, i.e. a plateau. The
+current scaffold does not pass this check yet; it is kept as a research
+diagnostic to drive the next round of charged-sector corrections.
+
 The Baake/Rinne equations cannot be pasted directly because their variables and gauge are CMC hyperboloidal, not compactified double-null. They are still the right source for matter stress tensor, charge conventions, and comparison diagnostics.

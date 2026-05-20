@@ -57,3 +57,44 @@ function fit_power_law(x, y; xmin=nothing, xmax=nothing)
     intercept = ybar - slope * xbar
     return slope, intercept, count(idx)
 end
+
+function conformal_weight_s(eQ0)
+    return real(0.5 + sqrt(complex(0.25 - eQ0^2)))
+end
+
+function horizon_charge_density_series(st::State, g::Grid, ep::EvolutionParams; i::Int=lastindex(g.u))
+    p = ep.rn
+    rplus, _ = horizons(p)
+    vef = [ef_v_from_mrt(v, p) for v in g.v]
+    rho = similar(vef)
+
+    for j in eachindex(g.v)
+        if i == firstindex(g.u)
+            q_u_compact = (st.Q[i + 1, j] - st.Q[i, j]) / (g.u[i + 1] - g.u[i])
+        elseif i == lastindex(g.u)
+            q_u_compact = (st.Q[i, j] - st.Q[i - 1, j]) / (g.u[i] - g.u[i - 1])
+        else
+            q_u_compact = (st.Q[i + 1, j] - st.Q[i - 1, j]) / (g.u[i + 1] - g.u[i - 1])
+        end
+
+        if j == firstindex(g.v)
+            q_vef = (st.Q[i, j + 1] - st.Q[i, j]) / (vef[j + 1] - vef[j])
+        elseif j == lastindex(g.v)
+            q_vef = (st.Q[i, j] - st.Q[i, j - 1]) / (vef[j] - vef[j - 1])
+        else
+            q_vef = (st.Q[i, j + 1] - st.Q[i, j - 1]) / (vef[j + 1] - vef[j - 1])
+        end
+
+        U = tan(g.u[i])
+        du_dU = cos(g.u[i])^2
+        if abs(p.Q0) ≈ p.M
+            q_r = 0.5 * du_dU * q_u_compact
+        else
+            kappa = (horizons(p)[1] - horizons(p)[2]) / (2 * rplus^2)
+            q_r = 0.5 * exp(-kappa * vef[j]) * du_dU * q_u_compact
+        end
+        rho[j] = (q_r + 0.5 * q_vef) / (4pi * rplus^2)
+    end
+
+    return vef, rho
+end
