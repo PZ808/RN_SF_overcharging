@@ -31,6 +31,16 @@ end
     @test all(isfinite, state.Q)
 end
 
+@testset "MRT ingoing initial leg normalization" begin
+    ep = EvolutionParams(rn=RNParams(1.0, 1.0), scalar_charge=0.0, amplitude=0.0)
+    grid = mrt2013_grid(; nu=16, nv=48, U0=-5.1, V0=0.0, U1=-1.0e-3, V1=20.0)
+    state = NLState(grid)
+    initialize_mrt2013_uncharged_ingoing!(state, grid, ep)
+
+    exact_logf = [log(mrt2013_metric_f(grid.u[1], V, ep.rn)) for V in grid.v]
+    @test maximum(abs.(state.logf[1, :] .- exact_logf)) < 1.0e-10
+end
+
 @testset "stress energy sources" begin
     src = stress_energy(2.0, 3.0, 0.4, 0.1, -0.2, 0.3, -0.1, 0.05, 0.2, 0.7, -0.4, 0.6)
     @test isfinite(src.Tuu)
@@ -46,4 +56,8 @@ end
     @test neutral.Ju == 0
     @test neutral.Jv == 0
     @test neutral.Tuv ≈ neutral.alpha^2 / 3.0
+
+    auv, avu, _, _, _ = maxwell_rhs(2.0, 3.0, 0.4, neutral)
+    @test avu - auv ≈ 0.4 * 3.0 / 2.0^2
+    @test auv + avu ≈ 0.0
 end

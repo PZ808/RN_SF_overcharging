@@ -28,8 +28,20 @@ NLState(g::Grid{T}) where {T<:Real} = NLState(T, length(g.u), length(g.v))
 "RN background metric coefficient in the MRT 2013 convention ds^2=-f du dv+r^2 dOmega^2."
 mrt2013_background_f(u::Real, v::Real, p::RNParams) = 2 * metric_f(u, v, p)
 
-function mrt2013_grid(; nu::Int=300, nv::Int=1200, U0=-5.1, V0=0.0, U1=0.95, V1=200.0)
+function mrt2013_grid(; nu::Int=300, nv::Int=1200, U0=-5.1, V0=0.0, U1=-1.0e-3, V1=200.0)
     return Grid(collect(range(U0, U1; length=nu)), collect(range(V0, V1; length=nv)))
+end
+
+function mrt2013_areal_radius(U::Real, V::Real, p::RNParams; tol=1.0e-12, maxiter=100)
+    rplus, _ = horizons(p)
+    target = rstar(rplus - U, p) + V / 2
+    return radius_from_rstar(target, p; tol, maxiter)
+end
+
+function mrt2013_metric_f(U::Real, V::Real, p::RNParams)
+    rplus, _ = horizons(p)
+    r = mrt2013_areal_radius(U, V, p)
+    return 2 * metric_F(r, p) / metric_F(rplus - U, p)
 end
 
 function mrt2013_bump(x, xmin, xmax; alpha=4.0, amplitude=1.0e-2)
@@ -48,27 +60,22 @@ function initialize_mrt2013_uncharged_ingoing!(st::NLState, g::Grid, ep::Evoluti
     fill!(st.phi_im, zero(eltype(st.phi_im)))
     fill!(st.Au, zero(eltype(st.Au)))
     fill!(st.Av, zero(eltype(st.Av)))
-    fill!(st.Q, one(eltype(st.Q)))
+    fill!(st.Q, convert(eltype(st.Q), ep.rn.Q0))
 
     U0 = g.u[firstindex(g.u)]
     V0 = g.v[firstindex(g.v)]
-    r0 = 1 - U0
 
     # Sigma_1: V=0, Eq. (21) and Appendix B: phi=0, f=2.
     j0 = firstindex(g.v)
     for i in eachindex(g.u)
-        st.r[i, j0] = 1 - g.u[i]
-        st.logf[i, j0] = log(2)
+        st.r[i, j0] = mrt2013_areal_radius(g.u[i], V0, ep.rn)
+        st.logf[i, j0] = log(mrt2013_metric_f(g.u[i], V0, ep.rn))
     end
 
-    # Sigma_2: U=U0, use Eq. (22) to integrate r_V.
+    # Sigma_2: U=U0, use the exact extremal RN radius from Appendix A.
     i0 = firstindex(g.u)
-    st.r[i0, j0] = r0
-    for j in j0+1:lastindex(g.v)
-        dv = g.v[j] - g.v[j - 1]
-        rprev = st.r[i0, j - 1]
-        rv = 0.5 * (1 - inv(rprev))^2
-        st.r[i0, j] = rprev + dv * rv
+    for j in eachindex(g.v)
+        st.r[i0, j] = mrt2013_areal_radius(U0, g.v[j], ep.rn)
     end
 
     for j in eachindex(g.v)
@@ -77,16 +84,17 @@ function initialize_mrt2013_uncharged_ingoing!(st::NLState, g::Grid, ep::Evoluti
 
     # Appendix B: f=2 on Sigma_1; determine f on Sigma_2 by constraint C1.
     st.logf[i0, j0] = log(2)
-    y = (0.5 * (1 - inv(st.r[i0, j0]))^2) / 2
+    y = (0.5 * metric_F(st.r[i0, j0], ep.rn)) / exp(st.logf[i0, j0])
     for j in j0+1:lastindex(g.v)
         dv = g.v[j] - g.v[j - 1]
         rprev = st.r[i0, j - 1]
         phiv = (st.phi_re[i0, j] - st.phi_re[i0, j - 1]) / dv
-        # C1 => d_V(r_V/f) = r phi_V^2 / (4 f).
-        # With y=r_V/f and f=r_V/y: y_V = r phi_V^2 y / (4 r_V).
-        rv = 0.5 * (1 - inv(rprev))^2
-        y += dv * rprev * phiv^2 * y / (4 * max(abs(rv), eps(typeof(rv))))
-        st.logf[i0, j] = log(abs(rv / y))
+        # MRT Eq. (7): d_V(r_V/f) = -r phi_V^2 / (4f).
+        # With y=r_V/f and f=r_V/y: y_V = -r phi_V^2 y / (4r_V).
+        rv = 0.5 * metric_F(rprev, ep.rn)
+        y -= dv * rprev * phiv^2 * y / (4 * max(abs(rv), eps(typeof(rv))))
+        rv_current = 0.5 * metric_F(st.r[i0, j], ep.rn)
+        st.logf[i0, j] = log(abs(rv_current / y))
     end
 
     return st
@@ -125,12 +133,12 @@ function seed_quasilorenz_potential!(st::NLState, g::Grid, ep::EvolutionParams)
     for j in j0+1:lastindex(g.v)
         dv = g.v[j] - g.v[j - 1]
         f = exp(st.logf[i0, j - 1])
-        st.Au[i0, j] = st.Au[i0, j - 1] + dv * st.Q[i0, j - 1] * f / (2 * st.r[i0, j - 1]^2)
+        st.Au[i0, j] = st.Au[i0, j - 1] - dv * st.Q[i0, j - 1] * f / (2 * st.r[i0, j - 1]^2)
     end
     for i in i0+1:lastindex(g.u)
         du = g.u[i] - g.u[i - 1]
         f = exp(st.logf[i - 1, j0])
-        st.Av[i, j0] = st.Av[i - 1, j0] - du * st.Q[i - 1, j0] * f / (2 * st.r[i - 1, j0]^2)
+        st.Av[i, j0] = st.Av[i - 1, j0] + du * st.Q[i - 1, j0] * f / (2 * st.r[i - 1, j0]^2)
     end
     return st
 end
@@ -159,7 +167,7 @@ function solve_outgoing_leg_logf_constraint!(st::NLState, g::Grid, ep::Evolution
                                st.phi_re[i, j - 1], st.phi_im[i, j - 1],
                                zero(rv), phiv_re, zero(rv), phiv_im,
                                st.Au[i, j - 1], st.Av[i, j - 1], ep.scalar_charge)
-        y += dv * source.Tvv * y^2 / (8 * max(rv^2, eps(typeof(rv))))
+        y -= dv * st.r[i, j - 1] * source.Tvv * y / (8 * rv)
         st.logf[i, j] = log(abs(rv / y))
     end
     return st
@@ -183,17 +191,18 @@ function solve_ingoing_leg_logf_constraint!(st::NLState, g::Grid, ep::EvolutionP
                                st.phi_re[i - 1, j], st.phi_im[i - 1, j],
                                phiu_re, zero(ru), phiu_im, zero(ru),
                                st.Au[i - 1, j], st.Av[i - 1, j], ep.scalar_charge)
-        y += du * source.Tuu * y^2 / (8 * max(ru^2, eps(typeof(ru))))
+        y -= du * st.r[i - 1, j] * source.Tuu * y / (8 * ru)
         st.logf[i, j] = log(abs(ru / y))
     end
     return st
 end
 
-function evolve_nonlinear!(st::NLState, g::Grid, ep::EvolutionParams; iterations::Int=5)
+function evolve_nonlinear!(st::NLState, g::Grid, ep::EvolutionParams; iterations::Int=5,
+                           subtract_rn_background::Bool=false)
     nu, nv = size(g)
     for i in 1:nu-1
         for j in 1:nv-1
-            step_nonlinear_cell!(st, g, ep, i, j; iterations)
+            step_nonlinear_cell!(st, g, ep, i, j; iterations, subtract_rn_background)
         end
     end
     return st
@@ -212,12 +221,14 @@ function corner_dv(a00, a10, a01, a11, dv)
 end
 
 function metric_rhs(r, f, ru, rv, q, source::StressEnergyComponents)
-    # These are the MRT uncharged-real-scalar equations with charged matter
-    # inserted in the same slots. The coefficients multiplying T_ab still need
-    # a final normalization pass against the chosen action.
-    scalar_uv_source = source.Tthth * f / (4r^2)
+    # MRT Eq. (4): (log f)_UV = f/(2r^2) + 2 r_U r_V/r^2
+    #                         - Q^2 f/r^4 - (1/2) phi_U phi_V.
+    # `source.Tthth` includes Maxwell angular stress, while the MRT equation
+    # already carries the Q^2 term explicitly, so subtract that part here.
+    scalar_tthth = source.Tthth - 2 * q^2 / r^2
+    scalar_uv_source = scalar_tthth * f / (8r^2)
     ruv = (-ru * rv - f * (1 - q^2 / r^2) / 4) / r
-    logfuv = -2 * ru * rv / r^2 - f / (2r^2) + q^2 * f / r^4 - scalar_uv_source
+    logfuv = f / (2r^2) + 2 * ru * rv / r^2 - q^2 * f / r^4 - scalar_uv_source
     return ruv, logfuv
 end
 
@@ -237,8 +248,10 @@ function charged_scalar_rhs(r, ru, rv, phi_re_u, phi_re_v, phi_im_u, phi_im_v,
 end
 
 function maxwell_rhs(r, f, q, source::StressEnergyComponents)
-    auv = q * f / (2r^2)
-    avu = -q * f / (2r^2)
+    # With F=dA and F_UV = A_V,U - A_U,V = Q f/r^2, quasi-Lorenz
+    # A_U,V + A_V,U = 0 gives the following split.
+    auv = -q * f / (2r^2)
+    avu = q * f / (2r^2)
 
     # Constraint-derived charge evolution. Coefficients should be rechecked
     # against the chosen 4pi/action normalization before production runs.
@@ -248,10 +261,42 @@ function maxwell_rhs(r, f, q, source::StressEnergyComponents)
     return auv, avu, q_uv, q_u_constraint, q_v_constraint
 end
 
-function step_nonlinear_cell!(st::NLState, g::Grid, ep::EvolutionParams, i::Int, j::Int; iterations::Int=5)
+function rn_background_update_defect(g::Grid, ep::EvolutionParams, i::Int, j::Int, du, dv)
+    u0, u1 = g.u[i], g.u[i + 1]
+    v0, v1 = g.v[j], g.v[j + 1]
+    p = ep.rn
+
+    rb00 = mrt2013_areal_radius(u0, v0, p)
+    rb10 = mrt2013_areal_radius(u1, v0, p)
+    rb01 = mrt2013_areal_radius(u0, v1, p)
+    rb11 = mrt2013_areal_radius(u1, v1, p)
+    lfb00 = log(mrt2013_metric_f(u0, v0, p))
+    lfb10 = log(mrt2013_metric_f(u1, v0, p))
+    lfb01 = log(mrt2013_metric_f(u0, v1, p))
+    lfb11 = log(mrt2013_metric_f(u1, v1, p))
+
+    rb = corner_average(rb00, rb10, rb01, rb11)
+    lfb = corner_average(lfb00, lfb10, lfb01, lfb11)
+    fb = exp(lfb)
+    rub = corner_du(rb00, rb10, rb01, rb11, du)
+    rvb = corner_dv(rb00, rb10, rb01, rb11, dv)
+    source = stress_energy(rb, fb, p.Q0, zero(rb), zero(rb), zero(rb), zero(rb),
+                           zero(rb), zero(rb), zero(rb), zero(rb), zero(rb))
+    ruvb, lfuvb = metric_rhs(rb, fb, rub, rvb, p.Q0, source)
+
+    r_defect = rb10 + rb01 - rb00 + du * dv * ruvb - rb11
+    lf_defect = lfb10 + lfb01 - lfb00 + du * dv * lfuvb - lfb11
+    return r_defect, lf_defect
+end
+
+function step_nonlinear_cell!(st::NLState, g::Grid, ep::EvolutionParams, i::Int, j::Int;
+                              iterations::Int=5, subtract_rn_background::Bool=false)
     du = g.u[i + 1] - g.u[i]
     dv = g.v[j + 1] - g.v[j]
     e = ep.scalar_charge
+    r_defect, lf_defect = subtract_rn_background ?
+                           rn_background_update_defect(g, ep, i, j, du, dv) :
+                           (zero(du), zero(du))
 
     r00, r10, r01 = st.r[i, j], st.r[i + 1, j], st.r[i, j + 1]
     lf00, lf10, lf01 = st.logf[i, j], st.logf[i + 1, j], st.logf[i, j + 1]
@@ -292,8 +337,8 @@ function step_nonlinear_cell!(st::NLState, g::Grid, ep::EvolutionParams, i::Int,
         pruv, piuv = charged_scalar_rhs(r, ru, rv, pru, prv, piu, piv, pr, pii, au, av, e)
         auv, avu, _, quc, qvc = maxwell_rhs(r, f, q, source)
 
-        r11 = r10 + r01 - r00 + du * dv * ruv
-        lf11 = lf10 + lf01 - lf00 + du * dv * lfuv
+        r11 = r10 + r01 - r00 + du * dv * ruv - r_defect
+        lf11 = lf10 + lf01 - lf00 + du * dv * lfuv - lf_defect
         pr11 = pr10 + pr01 - pr00 + du * dv * pruv
         pi11 = pi10 + pi01 - pi00 + du * dv * piuv
         au11 = au10 + au01 - au00 + du * dv * auv

@@ -24,7 +24,7 @@ grid = mrt2013_grid(; nu=180, nv=900, U0=-5.1, V0=0.0, U1=-1.0e-3, V1=120.0)
 state = NLState(grid)
 initialize_mrt2013_uncharged_ingoing!(state, grid, ep)
 
-evolve_nonlinear!(state, grid, ep; iterations=5)
+evolve_nonlinear!(state, grid, ep; iterations=12, subtract_rn_background=true)
 
 vef = grid.v
 phi_abs = abs.(state.phi_re[end, :])
@@ -40,3 +40,4 @@ println("fit samples = ", nfit)
 println("fit window V_EF >= ", vmin)
 println("late-time horizon-adjacent |phi| slope = ", slope)
 println("target slope for phi on extremal horizon: -1")
+println("status: target diagnostic only; this is a finite-U uniform-grid extraction, not AMR horizon tracking")

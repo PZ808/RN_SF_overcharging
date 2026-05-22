@@ -13,7 +13,7 @@ export RNParams, EvolutionParams, Grid, State
 export compact_mrt_grid, initialize_state, evolve!, maxwell_residuals
 export MetricState, einstein_backreaction_rhs!
 export NLState, initialize_nonlinear_state, evolve_nonlinear!, mrt2013_background_f
-export mrt2013_grid, initialize_mrt2013_uncharged_ingoing!
+export mrt2013_grid, mrt2013_areal_radius, mrt2013_metric_f, initialize_mrt2013_uncharged_ingoing!
 export charged_scalar_rhs, metric_rhs, maxwell_rhs
 export StressEnergyComponents, stress_energy, covariant_scalar_derivatives, current_components
 export outgoing_constraint_source, ingoing_constraint_source

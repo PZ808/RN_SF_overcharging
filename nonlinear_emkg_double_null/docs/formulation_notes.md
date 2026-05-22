@@ -37,6 +37,9 @@ In double-null coordinates this reduces to:
 Au,V + Av,U = 0
 ```
 
+The fixed-background track follows the Gelles/Pretorius potential sign
+convention used in their Appendix D.
+
 The cell update follows the Burko-Ori corner scheme described in Appendix D of `arXiv:2503.04881v2`.
 
 ### Nonlinear MRT charged-scalar scaffold
@@ -77,6 +80,7 @@ T_uv = alpha^2 / f
 T_theta theta = 4 r^2 Re[(D_u phi)^* D_v phi] / f + 2 r^2 alpha^2 / f^2
 J_a = 2 e Im[phi^* D_a phi]
 alpha = Q f / r^2
+F_UV = A_V,U - A_U,V = alpha
 ```
 
 These are the canonical complex-scalar and Maxwell stress components for
@@ -99,10 +103,28 @@ The next physics/code steps are:
 
 ## Current Diagnostics
 
-`examples/check_uncharged_decay.jl` is currently the strongest positive
-physics check. It uses MRT-style uncharged initial data and fits
-`|phi| ~ V^-1.06` on the horizon-adjacent line, close to the expected
-extremal `V^-1` behavior.
+`examples/residuals_mrt_equations.jl` evaluates the MRT equations on exact
+extreme RN data in the Appendix A coordinates. The printed Eq. (4), Eq. (5),
+Eq. (6), and Raychaudhuri signs are internally consistent: the current-sign
+residuals decrease under refinement, while the old flipped `logf` sign leaves
+an O(1) residual.
+
+`examples/check_nonlinear_vacuum_rn.jl` checks that the nonlinear Burko-Ori
+cell update preserves exact vacuum RN over a short run. It uses the optional
+RN-background defect subtraction in `evolve_nonlinear!`, which subtracts the
+known local truncation error of the exact MRT RN solution without changing the
+continuum equations. Use enough fixed-point iterations for the nonlinear cell
+solve; otherwise the remaining fixed-point error dominates this diagnostic.
+This is the first metric regression to run after changing signs, factors, or
+initial normalizations.
+
+`examples/check_uncharged_decay.jl` is the intended MRT uncharged decay
+target. After fixing the MRT signs in the metric equation, the current
+uniform-`U` grid is not stable enough at the long times needed for this
+diagnostic, so treat it as a target rather than a pass. MRT Appendix C uses
+Burko-Ori adaptive mesh refinement in the `U` direction and notes that the
+effective `U` resolution needed for late-time apparent-horizon work can be
+very large.
 
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time
