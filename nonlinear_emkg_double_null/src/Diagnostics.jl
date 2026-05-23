@@ -36,6 +36,98 @@ function horizon_phi_series(st::NLState, g::Grid, ep::EvolutionParams; i::Int=la
     return vef, phi_abs
 end
 
+function renormalized_hawking_mass(r, f, ru, rv, q)
+    return r / 2 * (1 + 4 * ru * rv / f + q^2 / r^2)
+end
+
+function renormalized_hawking_mass_profile(lower::NLSlice, upper::NLSlice;
+                                           rn_background::Union{Nothing,RNParams}=nothing)
+    upper.v > lower.v || throw(ArgumentError("upper slice must have larger V"))
+    upper_on_lower = lower.u == upper.u ? upper : interpolate_slice(upper, lower.u)
+
+    ncell = length(lower.u) - 1
+    dv = upper.v - lower.v
+    u = [(lower.u[i] + lower.u[i + 1]) / 2 for i in 1:ncell]
+    mass = similar(u)
+    for i in 1:ncell
+        du = lower.u[i + 1] - lower.u[i]
+        r = corner_average(lower.r[i], lower.r[i + 1],
+                           upper_on_lower.r[i], upper_on_lower.r[i + 1])
+        logf = corner_average(lower.logf[i], lower.logf[i + 1],
+                              upper_on_lower.logf[i], upper_on_lower.logf[i + 1])
+        q = corner_average(lower.Q[i], lower.Q[i + 1],
+                           upper_on_lower.Q[i], upper_on_lower.Q[i + 1])
+        ru = corner_du(lower.r[i], lower.r[i + 1],
+                       upper_on_lower.r[i], upper_on_lower.r[i + 1], du)
+        rv = corner_dv(lower.r[i], lower.r[i + 1],
+                       upper_on_lower.r[i], upper_on_lower.r[i + 1], dv)
+        mass[i] = renormalized_hawking_mass(r, exp(logf), ru, rv, q)
+        if !isnothing(rn_background)
+            rb00 = mrt2013_areal_radius(lower.u[i], lower.v, rn_background)
+            rb10 = mrt2013_areal_radius(lower.u[i + 1], lower.v, rn_background)
+            rb01 = mrt2013_areal_radius(lower.u[i], upper.v, rn_background)
+            rb11 = mrt2013_areal_radius(lower.u[i + 1], upper.v, rn_background)
+            lfb00 = log(mrt2013_metric_f(lower.u[i], lower.v, rn_background))
+            lfb10 = log(mrt2013_metric_f(lower.u[i + 1], lower.v, rn_background))
+            lfb01 = log(mrt2013_metric_f(lower.u[i], upper.v, rn_background))
+            lfb11 = log(mrt2013_metric_f(lower.u[i + 1], upper.v, rn_background))
+            rb = corner_average(rb00, rb10, rb01, rb11)
+            rub = corner_du(rb00, rb10, rb01, rb11, du)
+            rvb = corner_dv(rb00, rb10, rb01, rb11, dv)
+            lfb = corner_average(lfb00, lfb10, lfb01, lfb11)
+            discrete_background_mass =
+                renormalized_hawking_mass(rb, exp(lfb), rub, rvb, rn_background.Q0)
+            mass[i] -= discrete_background_mass - rn_background.M
+        end
+    end
+    return u, (lower.v + upper.v) / 2, mass
+end
+
+function bondi_mass_profile(st::AdaptiveNLState; target_v=150.0,
+                            rn_background::Union{Nothing,RNParams}=nothing)
+    length(st.slices) >= 2 ||
+        throw(ArgumentError("Bondi-mass approximation needs at least two V slices"))
+    vmid = [(st.slices[j].v + st.slices[j + 1].v) / 2
+            for j in 1:length(st.slices)-1]
+    _, j = findmin(abs.(vmid .- target_v))
+    return renormalized_hawking_mass_profile(st.slices[j], st.slices[j + 1];
+                                             rn_background)
+end
+
+function outgoing_expansion_profile(lower::NLSlice, upper::NLSlice)
+    upper.v > lower.v || throw(ArgumentError("upper slice must have larger V"))
+    upper_on_lower = lower.u == upper.u ? upper : interpolate_slice(upper, lower.u)
+    ncell = length(lower.u) - 1
+    dv = upper.v - lower.v
+    u = [(lower.u[i] + lower.u[i + 1]) / 2 for i in 1:ncell]
+    rv = similar(u)
+    for i in 1:ncell
+        rv[i] = corner_dv(lower.r[i], lower.r[i + 1],
+                          upper_on_lower.r[i], upper_on_lower.r[i + 1], dv)
+    end
+    return u, (lower.v + upper.v) / 2, rv
+end
+
+function outgoing_expansion_profile(st::AdaptiveNLState; target_v=150.0)
+    length(st.slices) >= 2 ||
+        throw(ArgumentError("expansion profile needs at least two V slices"))
+    vmid = [(st.slices[j].v + st.slices[j + 1].v) / 2
+            for j in 1:length(st.slices)-1]
+    _, j = findmin(abs.(vmid .- target_v))
+    return outgoing_expansion_profile(st.slices[j], st.slices[j + 1])
+end
+
+function apparent_horizon_location(u::AbstractVector, rv::AbstractVector)
+    length(u) == length(rv) ||
+        throw(ArgumentError("U and r_V profiles must have the same length"))
+    crossing = findfirst(value -> value <= 0, rv)
+    isnothing(crossing) && return nothing
+    crossing == firstindex(rv) && return u[crossing]
+    i = crossing
+    fraction = rv[i - 1] / (rv[i - 1] - rv[i])
+    return u[i - 1] + fraction * (u[i] - u[i - 1])
+end
+
 function fit_power_law(x, y; xmin=nothing, xmax=nothing)
     idx = trues(length(x))
     if xmin !== nothing

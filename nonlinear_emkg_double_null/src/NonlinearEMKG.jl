@@ -32,13 +32,51 @@ function mrt2013_grid(; nu::Int=300, nv::Int=1200, U0=-5.1, V0=0.0, U1=-1.0e-3, 
     return Grid(collect(range(U0, U1; length=nu)), collect(range(V0, V1; length=nv)))
 end
 
+function require_extreme_horizon_endpoint(p::RNParams)
+    scale = max(abs(p.M), abs(p.Q0), one(float(p.M)))
+    abs(abs(p.Q0) - p.M) <= 64 * eps(float(scale)) * scale ||
+        throw(ArgumentError("the analytic U=0 MRT endpoint is currently implemented only for extreme RN"))
+    return p
+end
+
+function mrt2013_interior_radius_from_rstar(target::Real, p::RNParams; tol=1.0e-12,
+                                            maxiter=100)
+    require_extreme_horizon_endpoint(p)
+    rplus, _ = horizons(p)
+    lo = eps(float(rplus)) * rplus
+    hi = rplus * (1 - eps(float(rplus)))
+    target >= rstar(lo, p) ||
+        throw(ArgumentError("target lies outside the regular interior MRT branch"))
+    for _ in 1:maxiter
+        mid = (lo + hi) / 2
+        if rstar(mid, p) < target
+            lo = mid
+        else
+            hi = mid
+        end
+        abs(hi - lo) <= tol * max(one(mid), abs(mid)) && return (lo + hi) / 2
+    end
+    return (lo + hi) / 2
+end
+
 function mrt2013_areal_radius(U::Real, V::Real, p::RNParams; tol=1.0e-12, maxiter=100)
     rplus, _ = horizons(p)
+    if iszero(U)
+        require_extreme_horizon_endpoint(p)
+        return rplus
+    end
     target = rstar(rplus - U, p) + V / 2
+    if U > 0
+        return mrt2013_interior_radius_from_rstar(target, p; tol, maxiter)
+    end
     return radius_from_rstar(target, p; tol, maxiter)
 end
 
 function mrt2013_metric_f(U::Real, V::Real, p::RNParams)
+    if iszero(U)
+        require_extreme_horizon_endpoint(p)
+        return 2 * one(promote_type(typeof(U), typeof(V), typeof(p.M)))
+    end
     rplus, _ = horizons(p)
     r = mrt2013_areal_radius(U, V, p)
     return 2 * metric_F(r, p) / metric_F(rplus - U, p)
@@ -46,10 +84,70 @@ end
 
 function mrt2013_bump(x, xmin, xmax; alpha=4.0, amplitude=1.0e-2)
     (xmin < x < xmax) || return zero(x)
-    mid = (xmin + xmax) / 2
-    halfwidth = (xmax - xmin) / 2
-    z = (x - mid) / halfwidth
-    return amplitude * exp(-alpha * z^2 / (1 - z^2))
+    width = xmax - xmin
+    exponent = alpha * (inv(x - xmax) - inv(x - xmin) + 4 / width)
+    return amplitude * exp(exponent)
+end
+
+function mrt2013_bump_derivative(x, xmin, xmax; alpha=4.0, amplitude=1.0e-2)
+    (xmin < x < xmax) || return zero(x)
+    phi = mrt2013_bump(x, xmin, xmax; alpha, amplitude)
+    return alpha * phi * (-inv(x - xmax)^2 + inv(x - xmin)^2)
+end
+
+function trapezoidal_integral(x::AbstractVector{<:Real}, y::AbstractVector{<:Real})
+    length(x) == length(y) || throw(ArgumentError("integration arrays must have equal length"))
+    integral = zero(promote_type(eltype(x), eltype(y)))
+    for i in firstindex(x):lastindex(x)-1
+        integral += (x[i + 1] - x[i]) * (y[i + 1] + y[i]) / 2
+    end
+    return integral
+end
+
+function mrt2013_initial_bondi_mass(f0::Real; U0=-5.1)
+    r0 = 1 - U0
+    return r0 / 2 * (1 + inv(r0)^2 - 2 / f0 * (1 - inv(r0))^2)
+end
+
+"""
+Choose `f0` for MRT's degenerate-initial-apparent-horizon family.
+
+This is the zero scalar-charge, `Q=M=1` outgoing-wave family of Sec. 3.1:
+Eq. (28) is integrated until `U=0` and `f0` is selected so that
+`r_V(0,0)=0`. The auxiliary quadrature is intentionally much finer than the
+evolution grid because `f0 - 2` is of order `amplitude^2`.
+"""
+function mrt2013_degenerate_horizon_f0(ep::EvolutionParams; U0=-5.1, Uah=0.0,
+                                       Uout=-5.0, Uin=0.9, alpha=4.0,
+                                       quadrature_points::Int=20001)
+    ep.scalar_charge == 0 ||
+        throw(ArgumentError("the MRT Fig. 7 initial-data tuner is for scalar charge e=0"))
+    ep.rn.M == 1 && ep.rn.Q0 == 1 ||
+        throw(ArgumentError("the MRT Fig. 7 initial-data tuner assumes Q=M=1"))
+    Uah == 0 ||
+        throw(ArgumentError("the degenerate apparent horizon is fixed at U=0"))
+    quadrature_points >= 3 ||
+        throw(ArgumentError("quadrature_points must be at least three"))
+
+    u = collect(range(U0, Uah; length=quadrature_points))
+    r = 1 .- u
+    phiu = [mrt2013_bump_derivative(U, Uout, Uin; alpha, amplitude=ep.amplitude)
+            for U in u]
+
+    scalar_integral = zeros(promote_type(eltype(u), typeof(ep.amplitude)), length(u))
+    for i in 2:length(u)
+        du = u[i] - u[i - 1]
+        scalar_integral[i] = scalar_integral[i - 1] +
+                             du * (r[i - 1] * phiu[i - 1]^2 + r[i] * phiu[i]^2) / 2
+    end
+    fshape = exp.(-scalar_integral ./ 4)
+    vacuum_integrand = 1 .- inv.(r).^2
+    integrand = vacuum_integrand .* fshape
+    denominator = trapezoidal_integral(u, integrand)
+    vacuum_denominator = trapezoidal_integral(u, vacuum_integrand)
+    # Normalize by the same quadrature's vacuum value so the exact f0=2
+    # background is preserved before extracting the O(amplitude^2) shift.
+    return 2 * vacuum_denominator / denominator
 end
 
 function initialize_mrt2013_uncharged_ingoing!(st::NLState, g::Grid, ep::EvolutionParams;
@@ -95,6 +193,53 @@ function initialize_mrt2013_uncharged_ingoing!(st::NLState, g::Grid, ep::Evoluti
         y -= dv * rprev * phiv^2 * y / (4 * max(abs(rv), eps(typeof(rv))))
         rv_current = 0.5 * metric_F(st.r[i0, j], ep.rn)
         st.logf[i0, j] = log(abs(rv_current / y))
+    end
+
+    return st
+end
+
+function initialize_mrt2013_outgoing_wave!(st::NLState, g::Grid, ep::EvolutionParams;
+                                           Uout=-5.0, Uin=0.9, alpha=4.0, f0=2.0)
+    fill!(st.r, zero(eltype(st.r)))
+    fill!(st.logf, zero(eltype(st.logf)))
+    fill!(st.phi_re, zero(eltype(st.phi_re)))
+    fill!(st.phi_im, zero(eltype(st.phi_im)))
+    fill!(st.Au, zero(eltype(st.Au)))
+    fill!(st.Av, zero(eltype(st.Av)))
+    fill!(st.Q, convert(eltype(st.Q), ep.rn.Q0))
+
+    i0 = firstindex(g.u)
+    j0 = firstindex(g.v)
+    U0 = g.u[i0]
+    V0 = g.v[j0]
+
+    # MRT Eqs. (20), (23), and (24): outgoing wavepacket on Sigma_1.
+    for i in eachindex(g.u)
+        st.r[i, j0] = mrt2013_areal_radius(g.u[i], V0, ep.rn)
+        st.phi_re[i, j0] = mrt2013_bump(g.u[i], Uout, Uin;
+                                        alpha, amplitude=ep.amplitude)
+    end
+
+    # MRT Eqs. (20) and (23): trivial scalar data on Sigma_2.
+    for j in eachindex(g.v)
+        st.r[i0, j] = mrt2013_areal_radius(U0, g.v[j], ep.rn)
+    end
+
+    # MRT Eq. (25): solve C2 on Sigma_1.
+    st.logf[i0, j0] = log(f0)
+    integral = zero(eltype(st.logf))
+    for i in i0+1:lastindex(g.u)
+        du = g.u[i] - g.u[i - 1]
+        phiu = (st.phi_re[i, j0] - st.phi_re[i - 1, j0]) / du
+        rmid = (st.r[i, j0] + st.r[i - 1, j0]) / 2
+        integral += du * rmid * phiu^2
+        st.logf[i, j0] = log(f0) - integral / 4
+    end
+
+    # MRT Eq. (26): solve C1 on Sigma_2, where phi=0.
+    normalization = f0 / mrt2013_metric_f(U0, V0, ep.rn)
+    for j in eachindex(g.v)
+        st.logf[i0, j] = log(normalization * mrt2013_metric_f(U0, g.v[j], ep.rn))
     end
 
     return st
