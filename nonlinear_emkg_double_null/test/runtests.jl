@@ -65,6 +65,18 @@ end
     mass = mrt2013_initial_bondi_mass(f0)
     @test (f0 - 2) / perturbed.amplitude^2 ≈ 0.740 atol=2.0e-3
     @test (mass - 1) / perturbed.amplitude^2 ≈ 0.789 atol=2.0e-3
+
+    aligned_coarse = mrt2013_grid(; nu=531, nv=2, U0=-5.1, V0=0.0, U1=0.2, V1=0.02)
+    aligned_fine = mrt2013_grid(; nu=1061, nv=2, U0=-5.1, V0=0.0, U1=0.2, V1=0.02)
+    coarse_state = NLState(aligned_coarse)
+    fine_state = NLState(aligned_fine)
+    initialize_mrt2013_outgoing_wave!(coarse_state, aligned_coarse, perturbed; f0)
+    initialize_mrt2013_outgoing_wave!(fine_state, aligned_fine, perturbed; f0)
+    coarse_zero = findfirst(iszero, aligned_coarse.u)
+    fine_zero = findfirst(iszero, aligned_fine.u)
+    coarse_rv = mrt2013_initial_rv_profile(coarse_state, aligned_coarse)[coarse_zero]
+    fine_rv = mrt2013_initial_rv_profile(fine_state, aligned_fine)[fine_zero]
+    @test abs(coarse_rv / fine_rv) ≈ 4 rtol=0.02
 end
 
 @testset "adaptive MRT slice utilities" begin
@@ -121,6 +133,14 @@ end
     @test adaptive_outgoing_expansion(previous, current) ≈
           [1.5, 0.75, -0.25, -1.5, -2.5]
     @test length(chop_inside_apparent_horizon(previous, current, chopping).u) == 5
+    width_chopping = HorizonChoppingConfig(; band_width=0.1, interior_buffer_cells=0,
+                                           interior_buffer_width=0.5)
+    @test length(chop_inside_apparent_horizon(previous, current, width_chopping).u) == 5
+    horizon_refinement = HorizonRefinementConfig(; band_width=0.1, max_du=0.6,
+                                                  exterior_cells=1, interior_cells=1)
+    @test horizon_refinement_flags(previous, current, horizon_refinement) ==
+          [false, true, true, true, false]
+    @test length(refine_near_apparent_horizon(previous, current, horizon_refinement).u) == 9
 
     cubic_u = [-2.0, -1.0, 0.0, 1.0]
     cubic = cubic_u .^ 3

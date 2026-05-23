@@ -110,6 +110,33 @@ function mrt2013_initial_bondi_mass(f0::Real; U0=-5.1)
 end
 
 """
+Reconstruct `r_V` on MRT's outgoing initial leg from Eq. (28).
+
+This exposes how accurately a discrete initial `U` grid represents the
+degenerate apparent-horizon condition `r_V(U=0,V=0)=0`.
+"""
+function mrt2013_initial_rv_profile(st::NLState, g::Grid)
+    j0 = firstindex(g.v)
+    n = length(g.u)
+    rv = zeros(promote_type(eltype(g.u), eltype(st.r)), n)
+    r0 = st.r[firstindex(g.u), j0]
+    q0 = st.Q[firstindex(g.u), j0]
+    rr_v = r0 / 2 * (1 - q0 / r0)^2
+    rv[firstindex(g.u)] = rr_v / r0
+    for i in firstindex(g.u)+1:lastindex(g.u)
+        du = g.u[i] - g.u[i - 1]
+        r_left, r_right = st.r[i - 1, j0], st.r[i, j0]
+        f_left, f_right = exp(st.logf[i - 1, j0]), exp(st.logf[i, j0])
+        q_left, q_right = st.Q[i - 1, j0], st.Q[i, j0]
+        source_left = f_left * (1 - q_left^2 / r_left^2)
+        source_right = f_right * (1 - q_right^2 / r_right^2)
+        rr_v -= du * (source_left + source_right) / 8
+        rv[i] = rr_v / r_right
+    end
+    return rv
+end
+
+"""
 Choose `f0` for MRT's degenerate-initial-apparent-horizon family.
 
 This is the zero scalar-charge, `Q=M=1` outgoing-wave family of Sec. 3.1:
@@ -230,9 +257,13 @@ function initialize_mrt2013_outgoing_wave!(st::NLState, g::Grid, ep::EvolutionPa
     integral = zero(eltype(st.logf))
     for i in i0+1:lastindex(g.u)
         du = g.u[i] - g.u[i - 1]
-        phiu = (st.phi_re[i, j0] - st.phi_re[i - 1, j0]) / du
-        rmid = (st.r[i, j0] + st.r[i - 1, j0]) / 2
-        integral += du * rmid * phiu^2
+        left_source = st.r[i - 1, j0] *
+                      mrt2013_bump_derivative(g.u[i - 1], Uout, Uin;
+                                              alpha, amplitude=ep.amplitude)^2
+        right_source = st.r[i, j0] *
+                       mrt2013_bump_derivative(g.u[i], Uout, Uin;
+                                               alpha, amplitude=ep.amplitude)^2
+        integral += du * (left_source + right_source) / 2
         st.logf[i, j0] = log(f0) - integral / 4
     end
 

@@ -47,6 +47,15 @@ struct HorizonChoppingConfig{T<:Real}
     start_v::T
     band_width::T
     interior_buffer_cells::Int
+    interior_buffer_width::T
+end
+
+struct HorizonRefinementConfig{T<:Real}
+    start_v::T
+    band_width::T
+    max_du::T
+    exterior_cells::Int
+    interior_cells::Int
 end
 
 function PointSplittingConfig(; band_width=1.0, max_relative_r=Inf, max_relative_f=Inf,
@@ -63,14 +72,29 @@ function PointSplittingConfig(; band_width=1.0, max_relative_r=Inf, max_relative
                                    convert(T, max_dphiu))
 end
 
-function HorizonChoppingConfig(; start_v=0.0, band_width=1.0, interior_buffer_cells::Int=1)
+function HorizonChoppingConfig(; start_v=0.0, band_width=1.0, interior_buffer_cells::Int=1,
+                               interior_buffer_width=0.0)
     start_v >= 0 || throw(ArgumentError("start_v must be nonnegative"))
     band_width > 0 || throw(ArgumentError("band_width must be positive"))
     interior_buffer_cells >= 0 ||
         throw(ArgumentError("interior_buffer_cells must be nonnegative"))
-    T = promote_type(typeof(start_v), typeof(band_width))
+    interior_buffer_width >= 0 ||
+        throw(ArgumentError("interior_buffer_width must be nonnegative"))
+    T = promote_type(typeof(start_v), typeof(band_width), typeof(interior_buffer_width))
     return HorizonChoppingConfig{T}(convert(T, start_v), convert(T, band_width),
-                                    interior_buffer_cells)
+                                    interior_buffer_cells, convert(T, interior_buffer_width))
+end
+
+function HorizonRefinementConfig(; start_v=0.0, band_width=1.0, max_du,
+                                 exterior_cells::Int=2, interior_cells::Int=1)
+    start_v >= 0 || throw(ArgumentError("start_v must be nonnegative"))
+    band_width > 0 || throw(ArgumentError("band_width must be positive"))
+    max_du > 0 || throw(ArgumentError("max_du must be positive"))
+    exterior_cells >= 0 || throw(ArgumentError("exterior_cells must be nonnegative"))
+    interior_cells >= 0 || throw(ArgumentError("interior_cells must be nonnegative"))
+    T = promote_type(typeof(start_v), typeof(band_width), typeof(max_du))
+    return HorizonRefinementConfig{T}(convert(T, start_v), convert(T, band_width),
+                                      convert(T, max_du), exterior_cells, interior_cells)
 end
 
 function NLPoint(u::Real, v::Real, r::Real, logf::Real, phi_re::Real, phi_im::Real,
@@ -350,7 +374,33 @@ function chop_inside_apparent_horizon(previous::NLSlice, current::NLSlice,
     crossing = findfirst(value -> value <= 0, rv)
     isnothing(crossing) && return current
     last_point = min(length(current.u), crossing + 1 + config.interior_buffer_cells)
+    if config.interior_buffer_width > 0
+        target_u = current.u[crossing + 1] + config.interior_buffer_width
+        last_point = max(last_point, min(length(current.u),
+                                         searchsortedfirst(current.u, target_u)))
+    end
     return last_point == length(current.u) ? current : truncate_slice(current, last_point)
+end
+
+function horizon_refinement_flags(previous::NLSlice, current::NLSlice,
+                                  config::HorizonRefinementConfig)
+    rv = adaptive_outgoing_expansion(previous, current)
+    flags = falses(length(current.u) - 1)
+    crossing = findfirst(value -> value <= 0, rv)
+    isnothing(crossing) && return flags
+
+    lo = max(firstindex(flags), crossing - config.exterior_cells)
+    hi = min(lastindex(flags), crossing + config.interior_cells)
+    for i in lo:hi
+        flags[i] = current.u[i + 1] - current.u[i] > config.max_du
+    end
+    return flags
+end
+
+function refine_near_apparent_horizon(previous::NLSlice, current::NLSlice,
+                                      config::HorizonRefinementConfig)
+    flags = horizon_refinement_flags(previous, current, config)
+    return any(flags) ? refine_slice(current, flags) : current
 end
 
 function require_same_coordinate(a::Real, b::Real, name::AbstractString)
@@ -421,15 +471,16 @@ Evolve through a prescribed western boundary using slice storage.
 
 Without point splitting or horizon chopping this retains the same U grid on
 every slice, providing a regression check against rectangular evolution. With
-policies it can discard points inside a detected apparent horizon and apply
-Burko-Ori-style U point splitting at completed V bands before advancing the
-next slice.
+policies it can refine around, then discard points inside, a detected apparent
+horizon and apply Burko-Ori-style U point splitting at completed V bands before
+advancing the next slice.
 """
 function evolve_adaptive(initial::NLSlice, west_boundary::AbstractVector{<:NLPoint},
                          ep::EvolutionParams; iterations::Int=5,
                          subtract_rn_background::Bool=false,
                          point_splitting::Union{Nothing,PointSplittingConfig}=nothing,
-                         horizon_chopping::Union{Nothing,HorizonChoppingConfig}=nothing)
+                         horizon_chopping::Union{Nothing,HorizonChoppingConfig}=nothing,
+                         horizon_refinement::Union{Nothing,HorizonRefinementConfig}=nothing)
     isempty(west_boundary) &&
         throw(ArgumentError("west_boundary needs at least its initial point"))
     require_same_coordinate(first(initial.u), first(west_boundary).u, "initial west U")
@@ -439,9 +490,23 @@ function evolve_adaptive(initial::NLSlice, west_boundary::AbstractVector{<:NLPoi
     next_split_v = isnothing(point_splitting) ? Inf : initial.v + point_splitting.band_width
     next_chop_v = isnothing(horizon_chopping) ? Inf :
                   max(initial.v + horizon_chopping.band_width, horizon_chopping.start_v)
+    next_horizon_refine_v = isnothing(horizon_refinement) ? Inf :
+                            max(initial.v + horizon_refinement.band_width,
+                                horizon_refinement.start_v)
     for j in 2:length(west_boundary)
         west_boundary[j].v > west_boundary[j - 1].v ||
             throw(ArgumentError("west_boundary V values must be strictly increasing"))
+        if !isnothing(horizon_refinement) && length(slices) >= 2
+            scale_v = max(abs(last(slices).v), abs(next_horizon_refine_v),
+                          one(float(last(slices).v)))
+            refine_due = last(slices).v >= next_horizon_refine_v -
+                         64 * eps(float(scale_v)) * scale_v
+            if refine_due
+                slices[end] = refine_near_apparent_horizon(slices[end - 1], last(slices),
+                                                            horizon_refinement)
+                next_horizon_refine_v += horizon_refinement.band_width
+            end
+        end
         if !isnothing(horizon_chopping) && length(slices) >= 2
             scale_v = max(abs(last(slices).v), abs(next_chop_v),
                           one(float(last(slices).v)))

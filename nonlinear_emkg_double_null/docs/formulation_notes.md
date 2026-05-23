@@ -121,7 +121,12 @@ polynomial interpolation where four neighboring points are available,
 following Burko-Ori's point-splitting description. An optional horizon-chop
 policy evaluates `r,V` from two consecutive slices and retains one cell inside
 the first detected `r,V <= 0` crossing, avoiding unnecessary evolution deeper
-inside a trapped region. Point removal remains to be added.
+inside a trapped region. A horizon-local refinement policy can additionally
+bisect cells near that crossing until a requested `Delta U` is reached.
+Combining that policy with chopping requires a coordinate-width interior
+buffer: retaining only one cell would shrink the physical buffer when that
+cell is split and can let the horizon move beyond the stored domain before the
+next refinement band. Point removal remains to be added.
 
 For extreme RN validation, the analytic MRT helpers include the regular
 future-horizon endpoint `U=0`, where `r=1` and `f=2`. This lets decay checks
@@ -167,7 +172,10 @@ the exact extreme-RN stencil defect from the numerically differentiated mass;
 without this subtraction, the finite-difference background error is comparable
 to the physical `O(epsilon^2)` mass excess.
 
-The initial-data tuner reproduces MRT's small-amplitude relation:
+The initial-data tuner reproduces MRT's small-amplitude relation. The seeded
+outgoing leg now evaluates the known analytic derivative of the Eq. (24)
+wavepacket when integrating Eq. (25), instead of taking finite differences of
+the sampled pulse:
 
 | `epsilon` | `(f0-2)/epsilon^2` | `(Mi-1)/epsilon^2` | MRT targets |
 | ---: | ---: | ---: | --- |
@@ -191,10 +199,10 @@ value directly at the numerically located apparent horizon is not converged
 yet: with `epsilon=0.02`, halving the adaptive thresholds at `Delta V=0.1`
 changes the inferred retained fraction from `0.0391` to `0.0269`.
 
-Enabling horizon chopping does not alter the `Delta V=0.1`, threshold `0.02`
-observables to shown precision, while reducing the final stored `U` points
-from 2387 to 1897. Keeping the adaptive thresholds fixed at `0.02`, a
-time-step scan gives:
+Before correcting the discrete Eq. (25) seeding, enabling horizon chopping
+did not alter the `Delta V=0.1`, threshold `0.02` observables to shown
+precision, while reducing the final stored `U` points from 2387 to 1897.
+Keeping the adaptive thresholds fixed at `0.02`, that time-step scan gave:
 
 | `Delta V` | final `U` points | `U_AH(V approximately 150)` | `epsilon^-2(M_B(-0.05)-1)` | horizon retained fraction |
 | ---: | ---: | ---: | ---: | ---: |
@@ -202,11 +210,52 @@ time-step scan gives:
 | 0.05 | 1891 | -0.00534 | 0.03616 | 0.05072 |
 | 0.02 | 1889 | -0.00543 | 0.03602 | 0.05396 |
 
-This is a useful separation of errors: the exterior Fig. 7 mass profile is
-stable as `Delta V` is reduced to MRT's `0.02`, while mass evaluated at the
-apparent-horizon crossing is not controlled by `Delta V` refinement alone.
-The next refinement increment should force higher `U` resolution in a
-neighborhood of the detected horizon while holding `Delta V=0.02` fixed.
+This separated the exterior mass profile from the apparent-horizon extraction
+error. Still using the pre-correction seed and holding `Delta V=0.02` fixed,
+horizon-local point splitting gave:
+
+| requested horizon `Delta U` | interior `U` buffer | attained horizon `Delta U` | final `U` points | `U_AH(V approximately 150)` | horizon retained fraction |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| disabled | 0.00 | 4.7484e-5 | 1889 | -0.00542952 | 0.05395993 |
+| disabled | 0.05 | 4.7484e-5 | 2165 | -0.00542952 | 0.05395993 |
+| 2.5e-5 | 0.05 | 2.3742e-5 | 2191 | -0.00542976 | 0.05395833 |
+| 1.25e-5 | 0.05 | 1.1871e-5 | 2233 | -0.00542979 | 0.05395797 |
+
+The buffer-only row verifies that retaining enough interior domain does not
+change that observable. Halving the actual horizon-cell width twice produced
+only an `O(2e-6)` change in the retained fraction.
+
+`examples/check_mrt_initial_normalization.jl` now evaluates Eq. (28) directly
+on the seeded `V=0` leg. MRT's continuum degenerate-horizon data have
+`r_V(U=0,V=0)=0`, but the original 110-point initial grid does not even
+contain `U=0`, and its sampled minimum is not close to zero:
+
+| initial `U` points | initial `Delta U` | location of minimum `r_V` | `min(r_V)/epsilon^2` |
+| ---: | ---: | ---: | ---: |
+| 110 | 4.8624e-2 | 0.00550 | 0.53935 |
+| 107 | 5.0000e-2 | 0.00000 | 0.51821 |
+| 531 | 1.0000e-2 | 0.00000 | 0.020738 |
+| 1061 | 5.0000e-3 | 0.00000 | 0.005185 |
+| 5301 | 1.0000e-3 | 0.00000 | 0.000207 |
+
+Thus the initial degenerate horizon is represented only to second-order
+accuracy and must be included in convergence studies. Repeating the late-time
+run after the Eq. (25) correction, with `Delta V=0.02`, interior buffer
+`0.05`, and requested horizon `Delta U=2.5e-5`, gives:
+
+| initial `U` points | attained horizon `Delta U` | `epsilon^-2(M_B(-0.05)-1)` | horizon retained fraction |
+| ---: | ---: | ---: | ---: |
+| 110 | 2.3742e-5 | 0.0356756 | 0.0534719 |
+| 531 | 1.9531e-5 | 0.0338520 | 0.0538673 |
+| 1061 | 1.9531e-5 | 0.0337517 | 0.0536832 |
+
+The initial resolution materially changes the exterior mass profile, but it
+does not bring the horizon-extracted retained fraction toward MRT's `0.0375`.
+Moreover, the refined-initial-grid runs develop a small `M_B < 1` region and
+a non-monotone late profile, inconsistent with the BPS bound and Eq. (14).
+The next debugging target is therefore the evolved mass diagnostic and/or
+the evolution defect-subtraction strategy, not the continuum `f0` or `M_i`
+normalization.
 
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time
