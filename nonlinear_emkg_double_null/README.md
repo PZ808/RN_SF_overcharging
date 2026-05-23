@@ -34,5 +34,7 @@ The next important work is checking every factor against the chosen action norma
 cd nonlinear_emkg_double_null
 julia --project=. examples/run_smoke.jl
 julia --project=. examples/run_nonlinear_smoke.jl
+julia --project=. examples/check_uncharged_bondi_mass.jl 0.02 0.02 0.02 150.0 0.1
+julia --project=. examples/check_uncharged_bondi_mass.jl 0.02 0.02 0.02 150.0 0.02
 julia --project=. -e 'using Pkg; Pkg.test()'
 ```

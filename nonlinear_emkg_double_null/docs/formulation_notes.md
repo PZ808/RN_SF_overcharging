@@ -103,6 +103,30 @@ The next physics/code steps are:
 
 ## Current Diagnostics
 
+`src/AdaptiveMRT.jl` is the first step toward the MRT/Burko-Ori adaptive
+scheme: it introduces fixed-`V` nonlinear slices with independent `U` grids,
+linear prolongation, cell-flag refinement helpers, and a first
+`advance_adaptive_slice` primitive. That primitive prolongates the previous
+slice onto the chosen next `U` grid and reuses the existing Burko-Ori cell
+update to fill the new fixed-`V` slice from the ingoing boundary point.
+`evolve_adaptive` loops over prescribed ingoing-boundary data, retaining the
+`U` grid when no refinement policy is supplied so it can be tested directly
+against the rectangular solver. Its Burko-Ori-style point-splitting policy
+checks completed fixed-width `V` bands for relative variation in `r` or `f`,
+absolute complex-scalar variation `|Delta Phi|`, and changes in a cell-slope
+estimate of `|Delta partial_U Phi|`. The scalar thresholds are absolute to
+avoid singular behavior at scalar zero crossings; diagnostics set them as
+fractions of the injected amplitude. Inserted points use four-point
+polynomial interpolation where four neighboring points are available,
+following Burko-Ori's point-splitting description. An optional horizon-chop
+policy evaluates `r,V` from two consecutive slices and retains one cell inside
+the first detected `r,V <= 0` crossing, avoiding unnecessary evolution deeper
+inside a trapped region. Point removal remains to be added.
+
+For extreme RN validation, the analytic MRT helpers include the regular
+future-horizon endpoint `U=0`, where `r=1` and `f=2`. This lets decay checks
+distinguish exact-horizon sampling from a nearby finite-`U` extraction.
+
 `examples/residuals_mrt_equations.jl` evaluates the MRT equations on exact
 extreme RN data in the Appendix A coordinates. The printed Eq. (4), Eq. (5),
 Eq. (6), and Raychaudhuri signs are internally consistent: the current-sign
@@ -118,13 +142,71 @@ solve; otherwise the remaining fixed-point error dominates this diagnostic.
 This is the first metric regression to run after changing signs, factors, or
 initial normalizations.
 
-`examples/check_uncharged_decay.jl` is the intended MRT uncharged decay
-target. After fixing the MRT signs in the metric equation, the current
-uniform-`U` grid is not stable enough at the long times needed for this
-diagnostic, so treat it as a target rather than a pass. MRT Appendix C uses
-Burko-Ori adaptive mesh refinement in the `U` direction and notes that the
-effective `U` resolution needed for late-time apparent-horizon work can be
-very large.
+`examples/check_uncharged_decay.jl` targets the MRT Fig. 13 decay experiment:
+an outgoing pulse on `Sigma_1`, sampled at the extreme-RN horizon endpoint
+`U=0`. This differs from the Appendix B ingoing-wave data supplied by
+`initialize_mrt2013_uncharged_ingoing!`, whose nonlinear endpoint is
+non-extreme RN and therefore is not a `1/V` check. The script accepts optional
+dimensionless thresholds for geometry, `Delta Phi / amplitude`, and
+`Delta partial_U Phi / amplitude`, making threshold-refinement comparisons
+repeatable. MRT Appendix C uses Burko-Ori adaptive mesh refinement in the `U`
+direction and notes that the effective `U` resolution needed for late-time
+horizon work can be very large.
+
+The outgoing-wave helper now implements MRT Eq. (24) directly, instead of an
+earlier convenient smooth substitute. The previous numerical tail-threshold
+scan predates that correction and must not be used as validation evidence; it
+should be repeated after the Bondi-mass convergence work below.
+
+`examples/check_uncharged_bondi_mass.jl` targets MRT Fig. 7 for scalar charge
+`e=0` on the electromagnetic background `Q=1`. It tunes `f0` by imposing the
+degenerate initial apparent horizon condition of Eq. (28), evaluates the
+renormalized Hawking mass of Eq. (13), and approximates `M_B(U)` by the
+profile at `V approximately 150` as in the paper. The diagnostic subtracts
+the exact extreme-RN stencil defect from the numerically differentiated mass;
+without this subtraction, the finite-difference background error is comparable
+to the physical `O(epsilon^2)` mass excess.
+
+The initial-data tuner reproduces MRT's small-amplitude relation:
+
+| `epsilon` | `(f0-2)/epsilon^2` | `(Mi-1)/epsilon^2` | MRT targets |
+| ---: | ---: | ---: | --- |
+| 0.02 | 0.74045 | 0.78919 | 0.740, 0.789 |
+| 0.03 | 0.74049 | 0.78908 | 0.740, 0.789 |
+
+For `Delta V=0.1` and adaptive thresholds `0.02`, the scaled mass profiles
+for `epsilon=0.02` and `0.03` nearly coincide in the wavepacket region:
+
+| `U` sample | `epsilon=0.02` | `epsilon=0.03` |
+| ---: | ---: | ---: |
+| about -5.0 | 0.78916 | 0.78905 |
+| about -4.0 | 0.71447 | 0.71443 |
+| about -3.0 | 0.32931 | 0.32921 |
+| about -2.0 | 0.28480 | 0.28492 |
+| about -0.05 | 0.03665 | 0.03620 |
+
+The last row is approaching the Fig. 7 final-mass target
+`epsilon^-2(Mf-1) approximately 0.789 * 0.0375 = 0.0296`. Extracting the
+value directly at the numerically located apparent horizon is not converged
+yet: with `epsilon=0.02`, halving the adaptive thresholds at `Delta V=0.1`
+changes the inferred retained fraction from `0.0391` to `0.0269`.
+
+Enabling horizon chopping does not alter the `Delta V=0.1`, threshold `0.02`
+observables to shown precision, while reducing the final stored `U` points
+from 2387 to 1897. Keeping the adaptive thresholds fixed at `0.02`, a
+time-step scan gives:
+
+| `Delta V` | final `U` points | `U_AH(V approximately 150)` | `epsilon^-2(M_B(-0.05)-1)` | horizon retained fraction |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.10 | 1897 | -0.00497 | 0.03665 | 0.03915 |
+| 0.05 | 1891 | -0.00534 | 0.03616 | 0.05072 |
+| 0.02 | 1889 | -0.00543 | 0.03602 | 0.05396 |
+
+This is a useful separation of errors: the exterior Fig. 7 mass profile is
+stable as `Delta V` is reduced to MRT's `0.02`, while mass evaluated at the
+apparent-horizon crossing is not controlled by `Delta V` refinement alone.
+The next refinement increment should force higher `U` resolution in a
+neighborhood of the detected horizon while holding `Delta V=0.02` fixed.
 
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time
