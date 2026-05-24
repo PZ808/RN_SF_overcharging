@@ -295,6 +295,56 @@ therefore constraint-preserving prolongation for refined fixed-`V` slices,
 most directly by reconstructing `log(f)` from the `U` constraint after
 interpolating `r` and `phi`.
 
+Constraint-preserving prolongation has now been added. When a parent cell is
+split, `r`, the scalar, potentials, and charge are midpoint-interpolated as
+before, but the inserted `log(f)` is reconstructed from the `U` Raychaudhuri
+constraint using both parent endpoints. Existing evolved grid values are not
+altered; projecting all existing values from one boundary was tested and
+discarded because it accumulated a larger slice-wide integration error.
+
+At the original point-splitting threshold `0.02`, this local constraint
+projection changes the corrected 531-point flux residual only from the
+pre-projection value `1.58e-3` to `1.54e-3`. Threshold refinement gives:
+
+| initial `U` points | point-splitting threshold | final `U` points | max exterior `abs(flux residual)` |
+| ---: | ---: | ---: | ---: |
+| 531 | fixed grid | 531 | 1.55e-5 |
+| 531 | 0.020 | 948 | 1.54e-3 |
+| 531 | 0.010 | 1479 | 5.23e-4 |
+| 531 | 0.005 | 2876 | 1.45e-4 |
+
+The projected prolongation is therefore retained as the consistent insertion
+rule, but it is not the dominant repair: at the thresholds affordable so far,
+adaptive evolutions still violate the flux diagnostic more strongly than a
+fixed grid. Before returning to the `V=150` Fig. 7 comparison, the next
+controlled step is to improve or further tighten the splitting criterion
+around the observed residual peak (`U approximately -0.23` in this run), and
+verify convergence of the flux residual.
+
+The conservative diagnostic provides a more direct resolution of the Fig. 7
+comparison. `uncharged_flux_integrated_mass_profile` anchors `varpi` in the
+outer electrovac region and integrates MRT Eq. (14) inward:
+
+`varpi(U) = varpi(U0) + integral[-r^2 r_V |phi_U|^2/(2f) dU]`.
+
+For the same `epsilon=0.02`, `Delta V=0.02`, 531-point aligned initial grid,
+point-splitting threshold `0.02`, horizon `Delta U <= 2.5e-5`, and
+`V approximately 150` evolution, the two extractions give:
+
+| extraction | `epsilon^-2(M_f-1)` | `(M_f-1)/(M_i-1)` | maximum exterior upward mass step |
+| :--- | ---: | ---: | ---: |
+| geometric Eq. (13) from differentiated metric data | 0.0428763 | 0.0543293 | 2.98e-5 |
+| flux-integrated Eq. (14) | 0.0295846 | 0.0374871 | 0 |
+| MRT Fig. 7 target | about 0.0296 | about 0.0375 | monotone |
+
+Thus the evolved scalar/metric solution carries the correct integrated mass
+loss for this validation run; the prior Fig. 7 failure came from evaluating
+the derivative-sensitive algebraic mass on split data. The immediate
+conservative follow-up is to treat flux-integrated `varpi` as the primary
+uncharged Bondi-mass diagnostic and derive the analogous charged scalar
+mass/charge balance laws before relying on horizon charge-accumulation
+measurements.
+
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time
 horizon charge-density exponent is `1 - 2s = 0`, i.e. a plateau. The

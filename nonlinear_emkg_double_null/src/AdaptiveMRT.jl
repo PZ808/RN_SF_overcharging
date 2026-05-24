@@ -258,6 +258,29 @@ function local_polynomial_value(x::AbstractVector{<:Real}, y::AbstractVector{<:R
     return value
 end
 
+function local_polynomial_derivative(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
+                                     xq::Real, cell::Int)
+    n = length(x)
+    length(y) == n || throw(ArgumentError("x and y must have the same length"))
+    width = min(4, n)
+    first_stencil = clamp(cell - 1, 1, n - width + 1)
+    derivative = zero(promote_type(eltype(y), typeof(xq)))
+    for a in first_stencil:first_stencil+width-1
+        basis_derivative = zero(derivative)
+        for c in first_stencil:first_stencil+width-1
+            c == a && continue
+            term = inv(x[a] - x[c])
+            for b in first_stencil:first_stencil+width-1
+                (b == a || b == c) && continue
+                term *= (xq - x[b]) / (x[a] - x[b])
+            end
+            basis_derivative += term
+        end
+        derivative += basis_derivative * y[a]
+    end
+    return derivative
+end
+
 function split_interpolate_values(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
                                   refine_cells::AbstractVector{Bool})
     length(refine_cells) == length(x) - 1 ||
@@ -348,6 +371,76 @@ function refine_slice(slice::NLSlice, refine_cells::AbstractVector{Bool})
                    split_interpolate_values(slice.u, slice.Q, refine_cells))
 end
 
+"""
+Evaluate the `U` Raychaudhuri constraint integrand inside one parent cell.
+
+For `y = r_U / f`, the convention used by the nonlinear evolution gives
+
+    y_U = -r T_UU / (8f),
+
+and equivalently
+
+    (log f)_U = (log |r_U|)_U + r T_UU / (8r_U).
+"""
+function u_constraint_data(slice::NLSlice, ep::EvolutionParams, u::Real, cell::Int)
+    r = local_polynomial_value(slice.u, slice.r, u, cell)
+    logf = local_polynomial_value(slice.u, slice.logf, u, cell)
+    phi_re = local_polynomial_value(slice.u, slice.phi_re, u, cell)
+    phi_im = local_polynomial_value(slice.u, slice.phi_im, u, cell)
+    Au = local_polynomial_value(slice.u, slice.Au, u, cell)
+    Av = local_polynomial_value(slice.u, slice.Av, u, cell)
+    q = local_polynomial_value(slice.u, slice.Q, u, cell)
+    ru = local_polynomial_derivative(slice.u, slice.r, u, cell)
+    phiu_re = local_polynomial_derivative(slice.u, slice.phi_re, u, cell)
+    phiu_im = local_polynomial_derivative(slice.u, slice.phi_im, u, cell)
+    scale = max(abs(ru), one(float(ru)))
+    threshold = 64 * eps(float(scale)) * scale
+    abs(ru) > threshold ||
+        throw(ArgumentError("constraint-preserving insertion cannot cross r_U = 0"))
+    source = stress_energy(r, exp(logf), q, phi_re, phi_im,
+                           phiu_re, zero(phiu_re), phiu_im, zero(phiu_im),
+                           Au, Av, ep.scalar_charge)
+    return ru, r * source.Tuu / (8 * ru)
+end
+
+"""
+Refine a fixed-`V` slice while preserving its evolved coarse-grid data.
+
+All fields except `logf` use four-point midpoint interpolation. For each
+inserted midpoint, `logf` is instead reconstructed from the two parent
+endpoints using the `U` Raychaudhuri constraint. Existing coarse-grid points
+are left unchanged, avoiding a projection error accumulated across the slice.
+"""
+function refine_slice_constrained(slice::NLSlice, refine_cells::AbstractVector{Bool},
+                                  ep::EvolutionParams)
+    any(refine_cells) || return slice
+    refined = refine_slice(slice, refine_cells)
+    logf = copy(refined.logf)
+    refined_index = 1
+    for i in eachindex(refine_cells)
+        if refine_cells[i]
+            left_u = slice.u[i]
+            right_u = slice.u[i + 1]
+            mid_u = (left_u + right_u) / 2
+            half_du = mid_u - left_u
+            ru_left, source_left = u_constraint_data(slice, ep, left_u, i)
+            ru_mid, source_mid = u_constraint_data(slice, ep, mid_u, i)
+            ru_right, source_right = u_constraint_data(slice, ep, right_u, i)
+            sign(ru_left) == sign(ru_mid) == sign(ru_right) ||
+                throw(ArgumentError("constraint-preserving insertion requires one sign of r_U"))
+            from_left = slice.logf[i] + log(abs(ru_mid / ru_left)) +
+                        half_du * (source_left + source_mid) / 2
+            from_right = slice.logf[i + 1] + log(abs(ru_mid / ru_right)) -
+                         half_du * (source_mid + source_right) / 2
+            logf[refined_index + 1] = (from_left + from_right) / 2
+            refined_index += 1
+        end
+        refined_index += 1
+    end
+    return NLSlice(refined.v, refined.u, refined.r, logf, refined.phi_re, refined.phi_im,
+                   refined.Au, refined.Av, refined.Q)
+end
+
 function truncate_slice(slice::NLSlice, last_point::Int)
     2 <= last_point <= length(slice.u) ||
         throw(ArgumentError("last_point must retain between two and all slice points"))
@@ -401,6 +494,13 @@ function refine_near_apparent_horizon(previous::NLSlice, current::NLSlice,
                                       config::HorizonRefinementConfig)
     flags = horizon_refinement_flags(previous, current, config)
     return any(flags) ? refine_slice(current, flags) : current
+end
+
+function refine_near_apparent_horizon(previous::NLSlice, current::NLSlice,
+                                      config::HorizonRefinementConfig,
+                                      ep::EvolutionParams)
+    flags = horizon_refinement_flags(previous, current, config)
+    return any(flags) ? refine_slice_constrained(current, flags, ep) : current
 end
 
 function require_same_coordinate(a::Real, b::Real, name::AbstractString)
@@ -503,7 +603,7 @@ function evolve_adaptive(initial::NLSlice, west_boundary::AbstractVector{<:NLPoi
                          64 * eps(float(scale_v)) * scale_v
             if refine_due
                 slices[end] = refine_near_apparent_horizon(slices[end - 1], last(slices),
-                                                            horizon_refinement)
+                                                            horizon_refinement, ep)
                 next_horizon_refine_v += horizon_refinement.band_width
             end
         end
@@ -524,7 +624,7 @@ function evolve_adaptive(initial::NLSlice, west_boundary::AbstractVector{<:NLPoi
             if split_due
                 flags = point_splitting_flags(last(slices), point_splitting)
                 if any(flags)
-                    slices[end] = refine_slice(last(slices), flags)
+                    slices[end] = refine_slice_constrained(last(slices), flags, ep)
                 end
                 next_split_v += point_splitting.band_width
             end

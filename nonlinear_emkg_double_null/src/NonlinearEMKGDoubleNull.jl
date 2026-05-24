@@ -22,6 +22,7 @@ export NLSlice, NLPoint, AdaptiveNLState, PointSplittingConfig, HorizonChoppingC
 export HorizonRefinementConfig, slice_point
 export slice_from_rectangular, adaptive_state_from_rectangular, west_boundary_from_rectangular
 export interpolate_slice, refine_u_grid, refine_slice, truncate_slice
+export refine_slice_constrained
 export spacing_refinement_flags, variation_refinement_flags, point_splitting_flags
 export adaptive_outgoing_expansion, chop_inside_apparent_horizon
 export horizon_refinement_flags, refine_near_apparent_horizon
@@ -31,6 +32,7 @@ export outgoing_constraint_source, ingoing_constraint_source
 export horizon_phi_series, fit_power_law
 export renormalized_hawking_mass, renormalized_hawking_mass_profile, bondi_mass_profile
 export uncharged_mass_flux_u_profile
+export uncharged_flux_integrated_mass_profile
 export outgoing_expansion_profile, apparent_horizon_location
 export horizon_charge_density_series, conformal_weight_s
 export rstar, areal_radius, metric_F, metric_f, metric_ftilde, radius_from_rstar, compact_v_from_ef_v

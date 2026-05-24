@@ -149,6 +149,23 @@ end
     split_cubic = refine_slice(cubic_slice, [true, false, true])
     @test split_cubic.r ≈ split_cubic.u .^ 3
 
+    constrained_ep = EvolutionParams(rn=RNParams(1.0, 1.0), scalar_charge=0.0, amplitude=0.0)
+    constrained_u = [0.0, 0.5, 1.0]
+    slope = 0.2
+    constrained_r = 2 .- constrained_u
+    constrained_phi = slope .* constrained_u
+    constrained_logf = log(2.0) .-
+                       slope^2 / 4 .* (2 .* constrained_u .- constrained_u .^ 2 ./ 2)
+    constrained_slice = NLSlice(0.0, constrained_u, constrained_r, constrained_logf,
+                                constrained_phi, zeros(3), zeros(3), zeros(3), ones(3))
+    split_constrained = refine_slice_constrained(constrained_slice, [true, true],
+                                                 constrained_ep)
+    expected_logf = log(2.0) .-
+                    slope^2 / 4 .* (2 .* split_constrained.u .-
+                                     split_constrained.u .^ 2 ./ 2)
+    @test split_constrained.logf ≈ expected_logf
+    @test first(split_constrained.logf) == first(constrained_slice.logf)
+
     grid = Grid(u, [0.0, 1.0])
     state = NLState(grid)
     state.r[:, 2] .= slice.r
@@ -201,6 +218,11 @@ end
     @test mass_u ≈ zeros(1)
     @test expected_mass_u == zeros(1)
     @test residual ≈ zeros(1)
+    _, _, geometric_mass, flux_mass, balance_error =
+        uncharged_flux_integrated_mass_profile(exact_lower, exact_upper; rn_background=p)
+    @test geometric_mass ≈ ones(2)
+    @test flux_mass ≈ ones(2)
+    @test balance_error ≈ zeros(2)
 
     @test apparent_horizon_location([-1.0, 0.0, 1.0], [0.5, 0.25, -0.25]) ≈ 0.5
     @test isnothing(apparent_horizon_location([-1.0, 0.0], [0.5, 0.25]))

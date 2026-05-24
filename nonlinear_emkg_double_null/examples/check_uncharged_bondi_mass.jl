@@ -9,6 +9,20 @@ function nearest_sample(u, values, target)
     return u[i], values[i]
 end
 
+function extract_horizon_value(u, values, uah)
+    isnothing(uah) && return last(values), values
+    exterior_indices = findall(value -> value <= uah, u)
+    last_exterior = last(exterior_indices)
+    next_index = min(last_exterior + 1, lastindex(u))
+    if next_index == last_exterior
+        value = values[last_exterior]
+    else
+        fraction = (uah - u[last_exterior]) / (u[next_index] - u[last_exterior])
+        value = values[last_exterior] + fraction * (values[next_index] - values[last_exterior])
+    end
+    return value, values[firstindex(values):last_exterior]
+end
+
 # MRT Fig. 7 uses the outgoing, degenerate-initial-apparent-horizon family.
 # Scalar charge e=0, while the background electromagnetic charge remains Q=1.
 epsilon = argument_or_default(1, 0.02)
@@ -73,8 +87,11 @@ state = evolve_adaptive(
 )
 
 u, sampled_v, mass = bondi_mass_profile(state; target_v, rn_background=ep.rn)
+_, _, _, flux_mass, mass_balance_error =
+    uncharged_flux_integrated_mass_profile(state; target_v, rn_background=ep.rn)
 expansion_u, _, rv = outgoing_expansion_profile(state; target_v)
 scaled_mass = (mass .- 1) ./ epsilon^2
+scaled_flux_mass = (flux_mass .- 1) ./ epsilon^2
 scaled_initial_mass = (initial_mass - 1) / epsilon^2
 uah = apparent_horizon_location(expansion_u, rv)
 crossing = findfirst(value -> value <= 0, rv)
@@ -83,25 +100,14 @@ sample_index = argmin(abs.([(state.slices[j].v + state.slices[j + 1].v) / 2 - ta
 sample_grid = state.slices[sample_index].u
 horizon_du = isnothing(crossing) ? NaN : sample_grid[crossing + 1] - sample_grid[crossing]
 
-if isnothing(uah)
-    final_mass = last(mass)
-    exterior_mass = mass
-else
-    exterior_indices = findall(value -> value <= uah, u)
-    last_exterior = last(exterior_indices)
-    next_index = min(last_exterior + 1, lastindex(u))
-    if next_index == last_exterior
-        final_mass = mass[last_exterior]
-    else
-        fraction = (uah - u[last_exterior]) / (u[next_index] - u[last_exterior])
-        final_mass = mass[last_exterior] +
-                     fraction * (mass[next_index] - mass[last_exterior])
-    end
-    exterior_mass = mass[firstindex(mass):last_exterior]
-end
+final_mass, exterior_mass = extract_horizon_value(u, mass, uah)
+flux_final_mass, exterior_flux_mass = extract_horizon_value(u, flux_mass, uah)
+_, exterior_balance_error = extract_horizon_value(u, mass_balance_error, uah)
 
 retained_fraction = (final_mass - 1) / (initial_mass - 1)
+flux_retained_fraction = (flux_final_mass - 1) / (initial_mass - 1)
 max_upward_step = maximum(diff(exterior_mass))
+max_flux_upward_step = maximum(diff(exterior_flux_mass))
 final_mass_label = isnothing(uah) ? "right-boundary" : "horizon-interpolated"
 
 println("epsilon = ", epsilon)
@@ -124,10 +130,23 @@ println("minimum exterior sampled mass = ", minimum(exterior_mass))
 println("maximum exterior upward mass step in U = ", max_upward_step)
 println(final_mass_label, " (MB - 1) / epsilon^2 = ", (final_mass - 1) / epsilon^2)
 println("(Mf - 1) / (Mi - 1) approximation = ", retained_fraction)
+println("minimum exterior flux-integrated mass = ", minimum(exterior_flux_mass))
+println("maximum exterior flux-integrated upward step in U = ", max_flux_upward_step)
+println(final_mass_label, " flux-integrated (MB - 1) / epsilon^2 = ",
+        (flux_final_mass - 1) / epsilon^2)
+println("flux-integrated (Mf - 1) / (Mi - 1) approximation = ", flux_retained_fraction)
+println("maximum exterior |geometric - flux mass| = ",
+        maximum(abs, exterior_balance_error))
 println("MRT Fig. 7 target for retained fraction: 0.0375")
 
 println("sampled epsilon^-2 (MB - 1):")
 for target in (-5.0, -4.0, -3.0, -2.0, -1.0, -0.05)
     ui, value = nearest_sample(u, scaled_mass, target)
+    println("  U = ", ui, ": ", value)
+end
+
+println("sampled flux-integrated epsilon^-2 (MB - 1):")
+for target in (-5.0, -4.0, -3.0, -2.0, -1.0, -0.05)
+    ui, value = nearest_sample(u, scaled_flux_mass, target)
     println("  U = ", ui, ": ", value)
 end

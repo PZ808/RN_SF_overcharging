@@ -143,6 +143,38 @@ function uncharged_mass_flux_u_profile(st::AdaptiveNLState; target_v=150.0,
     return uncharged_mass_flux_u_profile(st.slices[j], st.slices[j + 1]; rn_background)
 end
 
+"""
+Construct an uncharged scalar mass profile by integrating MRT Eq. (14) in `U`.
+
+The integrated profile is anchored to the geometrically reconstructed mass in
+the first outer cell. Away from that anchor, it is a conservative alternative
+to differentiating `r_U r_V/f`; a disagreement with `geometric_mass` measures
+the accumulated failure of the geometric mass to satisfy the flux law.
+"""
+function uncharged_flux_integrated_mass_profile(lower::NLSlice, upper::NLSlice;
+                                                rn_background::Union{Nothing,RNParams}=nothing)
+    u, v, geometric_mass = renormalized_hawking_mass_profile(lower, upper; rn_background)
+    _, _, _, expected_mass_u, _ =
+        uncharged_mass_flux_u_profile(lower, upper; rn_background)
+    flux_mass = similar(geometric_mass)
+    flux_mass[1] = geometric_mass[1]
+    for i in 2:length(flux_mass)
+        flux_mass[i] = flux_mass[i - 1] + (u[i] - u[i - 1]) * expected_mass_u[i - 1]
+    end
+    return u, v, geometric_mass, flux_mass, geometric_mass .- flux_mass
+end
+
+function uncharged_flux_integrated_mass_profile(st::AdaptiveNLState; target_v=150.0,
+                                                rn_background::Union{Nothing,RNParams}=nothing)
+    length(st.slices) >= 2 ||
+        throw(ArgumentError("flux-integrated mass needs at least two V slices"))
+    vmid = [(st.slices[j].v + st.slices[j + 1].v) / 2
+            for j in 1:length(st.slices)-1]
+    _, j = findmin(abs.(vmid .- target_v))
+    return uncharged_flux_integrated_mass_profile(st.slices[j], st.slices[j + 1];
+                                                  rn_background)
+end
+
 function outgoing_expansion_profile(lower::NLSlice, upper::NLSlice)
     upper.v > lower.v || throw(ArgumentError("upper slice must have larger V"))
     upper_on_lower = lower.u == upper.u ? upper : interpolate_slice(upper, lower.u)
