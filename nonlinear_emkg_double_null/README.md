@@ -35,6 +35,9 @@ cd nonlinear_emkg_double_null
 julia --project=. examples/run_smoke.jl
 julia --project=. examples/run_nonlinear_smoke.jl
 julia --project=. examples/check_mrt_initial_normalization.jl
+julia --project=. examples/check_electrovac_mass_conservation.jl 0.02 531 10.0 0.02
+julia --project=. examples/check_uncharged_mass_flux.jl 0.02 20.0 0.02 531 fixed
+julia --project=. examples/check_uncharged_mass_flux.jl 0.02 20.0 0.02 531 split
 julia --project=. examples/check_uncharged_bondi_mass.jl 0.02 0.02 0.02 150.0 0.1
 julia --project=. examples/check_uncharged_bondi_mass.jl 0.02 0.02 0.02 150.0 0.02
 julia --project=. examples/check_uncharged_bondi_mass.jl 0.02 0.02 0.02 150.0 0.02 0.000025 0.05

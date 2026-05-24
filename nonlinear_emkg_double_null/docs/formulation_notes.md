@@ -253,9 +253,47 @@ The initial resolution materially changes the exterior mass profile, but it
 does not bring the horizon-extracted retained fraction toward MRT's `0.0375`.
 Moreover, the refined-initial-grid runs develop a small `M_B < 1` region and
 a non-monotone late profile, inconsistent with the BPS bound and Eq. (14).
-The next debugging target is therefore the evolved mass diagnostic and/or
-the evolution defect-subtraction strategy, not the continuum `f0` or `M_i`
-normalization.
+
+The evolved-mass checks now separate this failure further. In
+`examples/check_electrovac_mass_conservation.jl`, scalar-free data with the
+same `f0 > 2` must evolve as a nearby non-extreme RN spacetime with constant
+mass `M_i`. At `V approximately 10`, `Delta V=0.02`, and 531 fixed `U`
+points, the maximum mass error is:
+
+| evolution defect correction | mass diagnostic correction | `max abs(varpi-M_i)` | relative to `M_i-1` |
+| :---: | :---: | ---: | ---: |
+| off | off | 2.75e-5 | 8.70e-2 |
+| off | on | 1.94e-5 | 6.14e-2 |
+| on | off | 3.82e-5 | 1.21e-1 |
+| on | on | 8.45e-7 | 2.68e-3 |
+
+Thus the paired extreme-RN stencil corrections improve, rather than corrupt,
+the nearby electrovac mass in this short control.
+
+`examples/check_uncharged_mass_flux.jl` evaluates MRT Eq. (14),
+`varpi_U = -r^2 r_V |phi_U|^2/(2f)`, directly from the evolved scalar fields
+and compares it with the derivative of the reconstructed mass. For
+`epsilon=0.02`, `V approximately 20`, `Delta V=0.02`, and the corrected mass
+diagnostic:
+
+| initial `U` points | adaptive mode | final `U` points | max exterior `abs(flux residual)` |
+| ---: | :--- | ---: | ---: |
+| 531 | fixed | 531 | 1.55e-5 |
+| 531 | chop only | 531 | 1.55e-5 |
+| 531 | point splitting only | 948 | 1.58e-3 |
+| 531 | point splitting plus chop | 821 | 1.58e-3 |
+| 1061 | fixed | 1061 | 3.96e-6 |
+| 1061 | point splitting only | 1404 | 1.45e-3 |
+
+The fixed-grid residual reduces by approximately four when the initial
+resolution doubles, as expected for the second-order stencil. In this
+`V approximately 20` control, chopping alone leaves the grid unchanged and
+cannot be the source of the displayed failure. Point insertion is necessary
+for the large residual, remains two orders of magnitude worse, and does not
+improve when starting from the finer grid. The next implementation target is
+therefore constraint-preserving prolongation for refined fixed-`V` slices,
+most directly by reconstructing `log(f)` from the `U` constraint after
+interpolating `r` and `phi`.
 
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time

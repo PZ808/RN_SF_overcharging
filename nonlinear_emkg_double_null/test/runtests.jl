@@ -196,6 +196,11 @@ end
     _, _, corrected_mass =
         renormalized_hawking_mass_profile(exact_lower, exact_upper; rn_background=p)
     @test corrected_mass ≈ ones(2)
+    _, _, mass_u, expected_mass_u, residual =
+        uncharged_mass_flux_u_profile(exact_lower, exact_upper; rn_background=p)
+    @test mass_u ≈ zeros(1)
+    @test expected_mass_u == zeros(1)
+    @test residual ≈ zeros(1)
 
     @test apparent_horizon_location([-1.0, 0.0, 1.0], [0.5, 0.25, -0.25]) ≈ 0.5
     @test isnothing(apparent_horizon_location([-1.0, 0.0], [0.5, 0.25]))

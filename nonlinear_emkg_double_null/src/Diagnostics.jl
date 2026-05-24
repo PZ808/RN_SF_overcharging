@@ -94,6 +94,55 @@ function bondi_mass_profile(st::AdaptiveNLState; target_v=150.0,
                                              rn_background)
 end
 
+"""
+Evaluate the MRT Eq. (14) `U`-flux law for an uncharged scalar:
+
+    varpi_U = -r^2 r_V |phi_U|^2 / (2f).
+
+The returned `mass_u` is differentiated from the reconstructed Hawking-mass
+profile; `expected_mass_u` is evaluated directly from the evolved fields.
+Passing `rn_background` applies the same diagnostic stencil-defect correction
+as `renormalized_hawking_mass_profile`.
+"""
+function uncharged_mass_flux_u_profile(lower::NLSlice, upper::NLSlice;
+                                       rn_background::Union{Nothing,RNParams}=nothing)
+    u, v, mass = renormalized_hawking_mass_profile(lower, upper; rn_background)
+    length(mass) >= 2 ||
+        throw(ArgumentError("mass-flux check needs at least three U grid points"))
+    upper_on_lower = lower.u == upper.u ? upper : interpolate_slice(upper, lower.u)
+    expected_cells = similar(mass)
+    for i in eachindex(mass)
+        du = lower.u[i + 1] - lower.u[i]
+        dv = upper.v - lower.v
+        r = corner_average(lower.r[i], lower.r[i + 1],
+                           upper_on_lower.r[i], upper_on_lower.r[i + 1])
+        f = exp(corner_average(lower.logf[i], lower.logf[i + 1],
+                               upper_on_lower.logf[i], upper_on_lower.logf[i + 1]))
+        rv = corner_dv(lower.r[i], lower.r[i + 1],
+                       upper_on_lower.r[i], upper_on_lower.r[i + 1], dv)
+        phiu_re = corner_du(lower.phi_re[i], lower.phi_re[i + 1],
+                            upper_on_lower.phi_re[i], upper_on_lower.phi_re[i + 1], du)
+        phiu_im = corner_du(lower.phi_im[i], lower.phi_im[i + 1],
+                            upper_on_lower.phi_im[i], upper_on_lower.phi_im[i + 1], du)
+        expected_cells[i] = -r^2 * rv * (phiu_re^2 + phiu_im^2) / (2f)
+    end
+    centered_u = [(u[i] + u[i + 1]) / 2 for i in firstindex(u):lastindex(u)-1]
+    mass_u = diff(mass) ./ diff(u)
+    expected_mass_u = [(expected_cells[i] + expected_cells[i + 1]) / 2
+                       for i in firstindex(expected_cells):lastindex(expected_cells)-1]
+    return centered_u, v, mass_u, expected_mass_u, mass_u .- expected_mass_u
+end
+
+function uncharged_mass_flux_u_profile(st::AdaptiveNLState; target_v=150.0,
+                                       rn_background::Union{Nothing,RNParams}=nothing)
+    length(st.slices) >= 2 ||
+        throw(ArgumentError("mass-flux check needs at least two V slices"))
+    vmid = [(st.slices[j].v + st.slices[j + 1].v) / 2
+            for j in 1:length(st.slices)-1]
+    _, j = findmin(abs.(vmid .- target_v))
+    return uncharged_mass_flux_u_profile(st.slices[j], st.slices[j + 1]; rn_background)
+end
+
 function outgoing_expansion_profile(lower::NLSlice, upper::NLSlice)
     upper.v > lower.v || throw(ArgumentError("upper slice must have larger V"))
     upper_on_lower = lower.u == upper.u ? upper : interpolate_slice(upper, lower.u)

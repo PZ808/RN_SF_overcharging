@@ -30,6 +30,7 @@ export StressEnergyComponents, stress_energy, covariant_scalar_derivatives, curr
 export outgoing_constraint_source, ingoing_constraint_source
 export horizon_phi_series, fit_power_law
 export renormalized_hawking_mass, renormalized_hawking_mass_profile, bondi_mass_profile
+export uncharged_mass_flux_u_profile
 export outgoing_expansion_profile, apparent_horizon_location
 export horizon_charge_density_series, conformal_weight_s
 export rstar, areal_radius, metric_F, metric_f, metric_ftilde, radius_from_rstar, compact_v_from_ef_v
