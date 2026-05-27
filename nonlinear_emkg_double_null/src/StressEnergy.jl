@@ -1,5 +1,5 @@
 """
-Matter sources for a spherically symmetric charged complex scalar.
+Reduced matter sources for a spherically symmetric charged complex scalar.
 
 Metric convention:
 
@@ -7,30 +7,56 @@ Metric convention:
 
 so `g_uv = g_vu = -f/2` and `g^uv = g^vu = -2/f`.
 
+The original MRT branch of the nonlinear solver stores the MRT-normalized scalar
+
+    Phi = sqrt(32*pi) * phi_GP
+
+where `phi_GP` is the canonically normalized field of Gelles-Pretorius
+arXiv:2602.11256. This leaves the MRT uncharged equations in their original
+normalization while allowing direct use of the charged equations after the
+corresponding current rescaling.
+
+For the GP2026 production branch, the state instead stores their evolved
+reduced field
+
+    Psi = r * Phi = sqrt(32*pi) * r * phi_GP.
+
+`stress_energy_reduced_scalar` converts `Psi` and its coordinate derivatives
+to `Phi` before evaluating the same source terms.
+
 Gauge convention:
 
-    D_a phi = partial_a phi - i e A_a phi
+    D_a Phi = partial_a Phi - i e A_a Phi
 
-For `phi = phi_re + i phi_im`, this gives
+For `Phi = phi_re + i phi_im`, this gives
 
-    Re(D_a phi) = partial_a phi_re + e A_a phi_im
-    Im(D_a phi) = partial_a phi_im - e A_a phi_re
+    Re(D_a Phi) = partial_a phi_re + e A_a phi_im
+    Im(D_a Phi) = partial_a phi_im - e A_a phi_re
 
-The default scalar stress tensor is the canonical complex-scalar one:
+The scalar components below are the canonical complex-scalar expression in
+terms of `Phi`:
 
-    T_ab^phi = (D_a phi)^* D_b phi + (D_b phi)^* D_a phi
-               - g_ab (D_c phi)^* D^c phi
+    T_ab^Phi = (D_a Phi)^* D_b Phi + (D_b Phi)^* D_a Phi
+               - g_ab (D_c Phi)^* D^c Phi
 
-This means `T_uu = 2 |D_u phi|^2` for the raw complex field. If later we
-choose `phi = (phi1 + i phi2)/sqrt(2)`, the scalar contribution should be
-multiplied by `scalar_weight = 1/2`.
+This means `T_uu = 2 |D_u Phi|^2`. The nonlinear Raychaudhuri and metric
+updates consume this reduced source with their MRT normalization factors.
 
-The Maxwell stress tensor here is written for L_EM = -F_ab F^ab / 4:
+The Faraday component is represented in the Gelles-Pretorius charge
+normalization, converted to the solver metric coefficient:
+
+    F_uv = -Q f/(2 r^2).
+
+The Maxwell stress entries are provided algebraically for diagnostics. The
+metric evolution carries the Coulomb terms explicitly through `Q`, rather
+than feeding these entries back as an independent source.
+
+The Maxwell expression below omits its Gaussian-unit overall `1/(4*pi)`:
 
     T_ab^EM = F_a{}^c F_bc - (1/4) g_ab F_cd F^cd
 
-No overall `1/(4*pi)` is included. Put that normalization into the Einstein
-equations, or pass `maxwell_weight`, once the action convention is frozen.
+Supply `maxwell_weight=1/(4*pi)` when a physical Gaussian-unit Maxwell stress
+is needed as output.
 """
 
 struct StressEnergyComponents{T<:Real}
@@ -77,8 +103,8 @@ function stress_energy(r, f, q, phi_re, phi_im, phi_re_u, phi_re_v,
     scalar_Tuv = zero(r)
     scalar_Tthth = 4 * r^2 * du_dot_dv / f
 
-    # F = alpha du wedge dv with alpha = Q f / r^2 in this convention.
-    alpha = q * f / r^2
+    # F = alpha du wedge dv with the Gaussian-unit enclosed charge Q.
+    alpha = -q * f / (2r^2)
     maxwell_Tuu = zero(r)
     maxwell_Tvv = zero(r)
     maxwell_Tuv = alpha^2 / f
@@ -93,6 +119,21 @@ function stress_energy(r, f, q, phi_re, phi_im, phi_re_u, phi_re_v,
         Jv,
         alpha,
     )
+end
+
+function stress_energy_reduced_scalar(r, f, q, ru, rv, psi_re, psi_im,
+                                      psi_re_u, psi_re_v, psi_im_u, psi_im_v,
+                                      Au, Av, e;
+                                      scalar_weight=one(r), maxwell_weight=one(r))
+    phi_re = psi_re / r
+    phi_im = psi_im / r
+    phi_re_u = (psi_re_u - ru * phi_re) / r
+    phi_re_v = (psi_re_v - rv * phi_re) / r
+    phi_im_u = (psi_im_u - ru * phi_im) / r
+    phi_im_v = (psi_im_v - rv * phi_im) / r
+    return stress_energy(r, f, q, phi_re, phi_im, phi_re_u, phi_re_v,
+                         phi_im_u, phi_im_v, Au, Av, e;
+                         scalar_weight, maxwell_weight)
 end
 
 outgoing_constraint_source(r, f, source::StressEnergyComponents) = r * source.Tvv / (8f)

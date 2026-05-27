@@ -382,7 +382,8 @@ and equivalently
 
     (log f)_U = (log |r_U|)_U + r T_UU / (8r_U).
 """
-function u_constraint_data(slice::NLSlice, ep::EvolutionParams, u::Real, cell::Int)
+function u_constraint_data(slice::NLSlice, ep::EvolutionParams, u::Real, cell::Int;
+                           reduced_scalar::Bool=false)
     r = local_polynomial_value(slice.u, slice.r, u, cell)
     logf = local_polynomial_value(slice.u, slice.logf, u, cell)
     phi_re = local_polynomial_value(slice.u, slice.phi_re, u, cell)
@@ -397,9 +398,16 @@ function u_constraint_data(slice::NLSlice, ep::EvolutionParams, u::Real, cell::I
     threshold = 64 * eps(float(scale)) * scale
     abs(ru) > threshold ||
         throw(ArgumentError("constraint-preserving insertion cannot cross r_U = 0"))
-    source = stress_energy(r, exp(logf), q, phi_re, phi_im,
-                           phiu_re, zero(phiu_re), phiu_im, zero(phiu_im),
-                           Au, Av, ep.scalar_charge)
+    source = if reduced_scalar
+        stress_energy_reduced_scalar(r, exp(logf), q, ru, zero(ru),
+                                     phi_re, phi_im, phiu_re, zero(phiu_re),
+                                     phiu_im, zero(phiu_im), Au, Av,
+                                     ep.scalar_charge)
+    else
+        stress_energy(r, exp(logf), q, phi_re, phi_im,
+                      phiu_re, zero(phiu_re), phiu_im, zero(phiu_im),
+                      Au, Av, ep.scalar_charge)
+    end
     return ru, r * source.Tuu / (8 * ru)
 end
 
@@ -412,7 +420,7 @@ endpoints using the `U` Raychaudhuri constraint. Existing coarse-grid points
 are left unchanged, avoiding a projection error accumulated across the slice.
 """
 function refine_slice_constrained(slice::NLSlice, refine_cells::AbstractVector{Bool},
-                                  ep::EvolutionParams)
+                                  ep::EvolutionParams; reduced_scalar::Bool=false)
     any(refine_cells) || return slice
     refined = refine_slice(slice, refine_cells)
     logf = copy(refined.logf)
@@ -423,9 +431,9 @@ function refine_slice_constrained(slice::NLSlice, refine_cells::AbstractVector{B
             right_u = slice.u[i + 1]
             mid_u = (left_u + right_u) / 2
             half_du = mid_u - left_u
-            ru_left, source_left = u_constraint_data(slice, ep, left_u, i)
-            ru_mid, source_mid = u_constraint_data(slice, ep, mid_u, i)
-            ru_right, source_right = u_constraint_data(slice, ep, right_u, i)
+            ru_left, source_left = u_constraint_data(slice, ep, left_u, i; reduced_scalar)
+            ru_mid, source_mid = u_constraint_data(slice, ep, mid_u, i; reduced_scalar)
+            ru_right, source_right = u_constraint_data(slice, ep, right_u, i; reduced_scalar)
             sign(ru_left) == sign(ru_mid) == sign(ru_right) ||
                 throw(ArgumentError("constraint-preserving insertion requires one sign of r_U"))
             from_left = slice.logf[i] + log(abs(ru_mid / ru_left)) +
@@ -498,9 +506,9 @@ end
 
 function refine_near_apparent_horizon(previous::NLSlice, current::NLSlice,
                                       config::HorizonRefinementConfig,
-                                      ep::EvolutionParams)
+                                      ep::EvolutionParams; reduced_scalar::Bool=false)
     flags = horizon_refinement_flags(previous, current, config)
-    return any(flags) ? refine_slice_constrained(current, flags, ep) : current
+    return any(flags) ? refine_slice_constrained(current, flags, ep; reduced_scalar) : current
 end
 
 function require_same_coordinate(a::Real, b::Real, name::AbstractString)
@@ -546,7 +554,8 @@ Burko-Ori cell update fills the new slice from left to right.
 function advance_adaptive_slice(previous::NLSlice, northwest::NLPoint, ep::EvolutionParams;
                                 new_u::AbstractVector{<:Real}=previous.u,
                                 iterations::Int=5,
-                                subtract_rn_background::Bool=false)
+                                subtract_rn_background::Bool=false,
+                                reduced_scalar::Bool=false)
     require_strictly_increasing(new_u, "new_u")
     require_same_coordinate(first(new_u), northwest.u, "first new_u")
     northwest.v > previous.v ||
@@ -561,7 +570,8 @@ function advance_adaptive_slice(previous::NLSlice, northwest::NLPoint, ep::Evolu
     fill_first_column!(st, prev_on_new)
     fill_northwest_boundary!(st, northwest)
     for i in 1:length(uu)-1
-        step_nonlinear_cell!(st, grid, ep, i, 1; iterations, subtract_rn_background)
+        step_nonlinear_cell!(st, grid, ep, i, 1;
+                             iterations, subtract_rn_background, reduced_scalar)
     end
     return slice_from_rectangular(st, grid, 2)
 end
@@ -580,7 +590,8 @@ function evolve_adaptive(initial::NLSlice, west_boundary::AbstractVector{<:NLPoi
                          subtract_rn_background::Bool=false,
                          point_splitting::Union{Nothing,PointSplittingConfig}=nothing,
                          horizon_chopping::Union{Nothing,HorizonChoppingConfig}=nothing,
-                         horizon_refinement::Union{Nothing,HorizonRefinementConfig}=nothing)
+                         horizon_refinement::Union{Nothing,HorizonRefinementConfig}=nothing,
+                         reduced_scalar::Bool=false)
     isempty(west_boundary) &&
         throw(ArgumentError("west_boundary needs at least its initial point"))
     require_same_coordinate(first(initial.u), first(west_boundary).u, "initial west U")
@@ -603,7 +614,8 @@ function evolve_adaptive(initial::NLSlice, west_boundary::AbstractVector{<:NLPoi
                          64 * eps(float(scale_v)) * scale_v
             if refine_due
                 slices[end] = refine_near_apparent_horizon(slices[end - 1], last(slices),
-                                                            horizon_refinement, ep)
+                                                            horizon_refinement, ep;
+                                                            reduced_scalar)
                 next_horizon_refine_v += horizon_refinement.band_width
             end
         end
@@ -624,13 +636,14 @@ function evolve_adaptive(initial::NLSlice, west_boundary::AbstractVector{<:NLPoi
             if split_due
                 flags = point_splitting_flags(last(slices), point_splitting)
                 if any(flags)
-                    slices[end] = refine_slice_constrained(last(slices), flags, ep)
+                    slices[end] = refine_slice_constrained(last(slices), flags, ep;
+                                                           reduced_scalar)
                 end
                 next_split_v += point_splitting.band_width
             end
         end
         next = advance_adaptive_slice(last(slices), west_boundary[j], ep;
-                                      iterations, subtract_rn_background)
+                                      iterations, subtract_rn_background, reduced_scalar)
         push!(slices, next)
     end
     return AdaptiveNLState(slices)

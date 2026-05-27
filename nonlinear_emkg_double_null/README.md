@@ -6,16 +6,25 @@ The near-term target is to combine:
 
 - Baake & Rinne, arXiv:1610.08352v2: fully coupled Einstein-Maxwell-Klein-Gordon equations.
 - Gelles & Pretorius, arXiv:2503.04881v2: compactified double-null MRT coordinates.
+- Gelles & Pretorius, arXiv:2602.11256v1: fully nonlinear charged scalar evolution in double-null MRT gauge.
 
 This first scaffold implements the coordinate machinery, initial data, a fixed-background charged scalar electrodynamics update, and a first nonlinear MRT-style state/update for a charged complex scalar with dynamic `r`, `f`, `A_u`, `A_v`, and enclosed charge `Q`.
 
-The nonlinear charged module is scaffolding, not yet a validated research solver. The main convention is fixed in `src/NonlinearEMKG.jl`:
+The nonlinear charged module is under validation. The main metric convention is fixed in `src/NonlinearEMKG.jl`:
 
 ```text
 ds^2 = -f(u,v) du dv + r(u,v)^2 dOmega^2
+MRT branch:    Phi = sqrt(32*pi) * phi_GP
+GP2026 branch: Psi = r*Phi = sqrt(32*pi) * r*phi_GP
 ```
 
-The next important work is checking every factor against the chosen action normalization, then adding constraint solves on the two initial null legs and convergence tests.
+Here `phi_GP` denotes the canonically normalized scalar used in
+arXiv:2602.11256. The GP2026 driver evolves the paper's reduced field
+`r*phi` with `reduced_scalar=true` and converts back to `Phi` only when
+computing stress-energy and Maxwell current sources. Conservative charge and
+mass-balance diagnostics are now available; the next important work is
+locating the remaining initial-gauge/threshold discrepancy before
+horizon-accumulation validation.
 
 ## Layout
 
@@ -43,5 +52,9 @@ julia --project=. examples/check_uncharged_bondi_mass.jl 0.02 0.02 0.02 150.0 0.
 julia --project=. examples/check_uncharged_bondi_mass.jl 0.02 0.02 0.02 150.0 0.02
 julia --project=. examples/check_uncharged_bondi_mass.jl 0.02 0.02 0.02 150.0 0.02 0.000025 0.05
 julia --project=. examples/check_uncharged_bondi_mass.jl 0.02 0.02 0.02 150.0 0.02 0.000025 0.05 531
+julia --project=. examples/check_nonlinear_charged_balance.jl
+julia --project=. examples/check_gp2026_initial_data.jl
+julia --project=. examples/check_gp2026_short_balance.jl
+julia --project=. examples/check_gp2026_long_evolution.jl
 julia --project=. -e 'using Pkg; Pkg.test()'
 ```

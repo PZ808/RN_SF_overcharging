@@ -31,6 +31,155 @@ end
     @test all(isfinite, state.Q)
 end
 
+@testset "charged nonlinear initial Maxwell constraint" begin
+    ep = EvolutionParams(rn=RNParams(1.0, 0.999), scalar_charge=0.6,
+                         amplitude=1.0e-2, omega=0.6, center=4.0, width=1.0)
+    grid = compact_mrt_grid(ep.rn; nu=8, nv=24, u0=-1.0,
+                            v0=compact_v_from_ef_v(0.0, ep.rn), u1=-0.1,
+                            v1=compact_v_from_ef_v(8.0, ep.rn))
+    state = initialize_nonlinear_state(grid, ep)
+    i = firstindex(grid.u)
+    @test maximum(abs.(state.Q[i, :] .- ep.rn.Q0)) > 0
+    checked_cells = 0
+    for j in firstindex(grid.v)+1:lastindex(grid.v)
+        dv = grid.v[j] - grid.v[j - 1]
+        r = (state.r[i, j - 1] + state.r[i, j]) / 2
+        f = exp((state.logf[i, j - 1] + state.logf[i, j]) / 2)
+        q = state.Q[i, j - 1]
+        phi_re = (state.phi_re[i, j - 1] + state.phi_re[i, j]) / 2
+        phi_im = (state.phi_im[i, j - 1] + state.phi_im[i, j]) / 2
+        phiv_re = (state.phi_re[i, j] - state.phi_re[i, j - 1]) / dv
+        phiv_im = (state.phi_im[i, j] - state.phi_im[i, j - 1]) / dv
+        Av = (state.Av[i, j - 1] + state.Av[i, j]) / 2
+        source = stress_energy(r, f, q, phi_re, phi_im, zero(phiv_re), phiv_re,
+                               zero(phiv_im), phiv_im, 0.0, Av, ep.scalar_charge)
+        observed = (state.Q[i, j] - state.Q[i, j - 1]) / dv
+        expected = -r^2 * source.Jv / 8
+        if abs(dv * expected) > 16 * eps(ep.rn.Q0)
+            @test observed ≈ expected atol=4 * eps(ep.rn.Q0) / dv
+            checked_cells += 1
+        end
+    end
+    @test checked_cells > 0
+end
+
+@testset "centered nonlinear Maxwell potential update" begin
+    ep = EvolutionParams(rn=RNParams(1.0, 1.0), scalar_charge=0.6, amplitude=0.02)
+    neutral = EvolutionParams(rn=ep.rn, scalar_charge=0.0, amplitude=ep.amplitude)
+    grid = mrt2013_grid(; nu=6, nv=4, U0=-5.1, V0=0.0, U1=-4.9, V1=0.06)
+    state = NLState(grid)
+    initialize_mrt2013_charged_outgoing_wave!(state, grid, ep;
+                                              f0=mrt2013_degenerate_horizon_f0(neutral))
+    evolve_nonlinear!(state, grid, ep; iterations=12, subtract_rn_background=true)
+
+    i, j = 1, 1
+    du = grid.u[i + 1] - grid.u[i]
+    dv = grid.v[j + 1] - grid.v[j]
+    r = NonlinearEMKGDoubleNull.corner_average(state.r[i, j], state.r[i + 1, j],
+                                               state.r[i, j + 1], state.r[i + 1, j + 1])
+    f = exp(NonlinearEMKGDoubleNull.corner_average(state.logf[i, j],
+                                                   state.logf[i + 1, j],
+                                                   state.logf[i, j + 1],
+                                                   state.logf[i + 1, j + 1]))
+    q = NonlinearEMKGDoubleNull.corner_average(state.Q[i, j], state.Q[i + 1, j],
+                                               state.Q[i, j + 1], state.Q[i + 1, j + 1])
+    phi_re = NonlinearEMKGDoubleNull.corner_average(state.phi_re[i, j],
+                                                    state.phi_re[i + 1, j],
+                                                    state.phi_re[i, j + 1],
+                                                    state.phi_re[i + 1, j + 1])
+    phi_im = NonlinearEMKGDoubleNull.corner_average(state.phi_im[i, j],
+                                                    state.phi_im[i + 1, j],
+                                                    state.phi_im[i, j + 1],
+                                                    state.phi_im[i + 1, j + 1])
+    phiu_re = NonlinearEMKGDoubleNull.corner_du(state.phi_re[i, j],
+                                                state.phi_re[i + 1, j],
+                                                state.phi_re[i, j + 1],
+                                                state.phi_re[i + 1, j + 1], du)
+    phiv_re = NonlinearEMKGDoubleNull.corner_dv(state.phi_re[i, j],
+                                                state.phi_re[i + 1, j],
+                                                state.phi_re[i, j + 1],
+                                                state.phi_re[i + 1, j + 1], dv)
+    phiu_im = NonlinearEMKGDoubleNull.corner_du(state.phi_im[i, j],
+                                                state.phi_im[i + 1, j],
+                                                state.phi_im[i, j + 1],
+                                                state.phi_im[i + 1, j + 1], du)
+    phiv_im = NonlinearEMKGDoubleNull.corner_dv(state.phi_im[i, j],
+                                                state.phi_im[i + 1, j],
+                                                state.phi_im[i, j + 1],
+                                                state.phi_im[i + 1, j + 1], dv)
+    Au = NonlinearEMKGDoubleNull.corner_average(state.Au[i, j], state.Au[i + 1, j],
+                                                state.Au[i, j + 1], state.Au[i + 1, j + 1])
+    Av = NonlinearEMKGDoubleNull.corner_average(state.Av[i, j], state.Av[i + 1, j],
+                                                state.Av[i, j + 1], state.Av[i + 1, j + 1])
+    source = stress_energy(r, f, q, phi_re, phi_im, phiu_re, phiv_re, phiu_im,
+                           phiv_im, Au, Av, ep.scalar_charge)
+    auv, avu, _, _, _ = maxwell_rhs(r, f, q, source)
+    numerical_auv = NonlinearEMKGDoubleNull.corner_dv(state.Au[i, j], state.Au[i + 1, j],
+                                                       state.Au[i, j + 1],
+                                                       state.Au[i + 1, j + 1], dv)
+    numerical_avu = NonlinearEMKGDoubleNull.corner_du(state.Av[i, j], state.Av[i + 1, j],
+                                                       state.Av[i, j + 1],
+                                                       state.Av[i + 1, j + 1], du)
+    @test numerical_auv ≈ auv atol=1.0e-12
+    @test numerical_avu ≈ avu atol=1.0e-12
+end
+
+@testset "GP2026 single-pulse super-extremal initial data" begin
+    q0 = 1.0033218
+    ep = EvolutionParams(rn=RNParams(1.0, q0), scalar_charge=0.6 / q0,
+                         amplitude=0.01, omega=1.0)
+    grid = gp2026_grid(; nu=27, nv=201, U0=-1.0, V0=0.0, U1=1.6, V1=20.0)
+    state = NLState(grid)
+    initialize_gp2026_single_pulse!(state, grid, ep)
+
+    @test state.r[:, 1] ≈ 1 .- grid.u ./ 2
+    @test state.r[end, 1] ≈ 0.2
+    @test all(iszero, state.phi_re[:, 1])
+    @test all(iszero, state.phi_im[:, 1])
+    @test all(state.Q[:, 1] .== q0)
+
+    peak = findfirst(==(10.0), grid.v)
+    physical_p = hypot(state.phi_re[1, peak], state.phi_im[1, peak]) / sqrt(32 * pi)
+    @test physical_p ≈ ep.amplitude
+    @test state.Q[1, end] > q0
+    @test all(iszero, state.Au[:, 1])
+    @test all(iszero, state.Av[1, :])
+    @test maximum(abs, state.Au[1, :]) > 0
+    @test maximum(abs, state.Av[:, 1]) > 0
+
+    r0 = state.r[1, 1]
+    ru0 = gp2026_extremal_gauge_ru(-1.0)
+    rv0 = gp2026_extremal_gauge_rv(-1.0, 0.0)
+    m0 = renormalized_hawking_mass(r0, exp(state.logf[1, 1]), ru0, rv0, q0)
+    @test m0 ≈ 1.0
+    @test maximum(abs.(state.logf[:, 1] .- state.logf[1, 1])) < 1.0e-14
+
+    base_f_at_end = exp(state.logf[1, 1]) *
+                    gp2026_extremal_gauge_rv(-1.0, last(grid.v)) / rv0
+    @test exp(state.logf[1, end]) > base_f_at_end
+    _, _, _, _, q_v_residual =
+        charged_charge_flux_v_profile(adaptive_state_from_rectangular(state, grid), ep;
+                                      target_u=-1.0, reduced_scalar=true)
+    @test maximum(abs, q_v_residual) < 3.0e-6
+end
+
+@testset "GP2026 short charged constraint evolution" begin
+    q0 = 1.0033218
+    ep = EvolutionParams(rn=RNParams(1.0, q0), scalar_charge=0.6 / q0,
+                         amplitude=0.01, omega=1.0)
+    grid = gp2026_grid(; nu=11, nv=101, U0=-1.0, V0=0.0, U1=-0.9, V1=20.0)
+    state = NLState(grid)
+    initialize_gp2026_single_pulse!(state, grid, ep)
+    evolve_nonlinear!(state, grid, ep; iterations=10, reduced_scalar=true)
+    adaptive = adaptive_state_from_rectangular(state, grid)
+    _, _, _, _, q_u_residual =
+        charged_charge_flux_u_profile(adaptive, ep; target_v=10.0, reduced_scalar=true)
+    _, _, _, _, q_v_residual =
+        charged_charge_flux_v_profile(adaptive, ep; target_u=-0.95, reduced_scalar=true)
+    @test maximum(abs, q_u_residual) < 3.0e-6
+    @test maximum(abs, q_v_residual) < 1.2e-5
+end
+
 @testset "MRT ingoing initial leg normalization" begin
     ep = EvolutionParams(rn=RNParams(1.0, 1.0), scalar_charge=0.0, amplitude=0.0)
     grid = mrt2013_grid(; nu=16, nv=48, U0=-5.1, V0=0.0, U1=-1.0e-3, V1=20.0)
@@ -77,6 +226,17 @@ end
     coarse_rv = mrt2013_initial_rv_profile(coarse_state, aligned_coarse)[coarse_zero]
     fine_rv = mrt2013_initial_rv_profile(fine_state, aligned_fine)[fine_zero]
     @test abs(coarse_rv / fine_rv) ≈ 4 rtol=0.02
+
+    charged = EvolutionParams(rn=RNParams(1.0, 1.0), scalar_charge=0.6,
+                              amplitude=1.0e-3)
+    charged_state = NLState(aligned_coarse)
+    initialize_mrt2013_charged_outgoing_wave!(charged_state, aligned_coarse, charged;
+                                              f0=mrt2013_degenerate_horizon_f0(perturbed))
+    @test all(charged_state.Q .== charged.rn.Q0)
+    @test all(iszero, charged_state.Au[:, 1])
+    @test all(iszero, charged_state.Av[1, :])
+    @test maximum(abs, charged_state.Au[1, :]) > 0
+    @test maximum(abs, charged_state.Av[:, 1]) > 0
 end
 
 @testset "adaptive MRT slice utilities" begin
@@ -132,7 +292,12 @@ end
     chopping = HorizonChoppingConfig(; band_width=0.1, interior_buffer_cells=1)
     @test adaptive_outgoing_expansion(previous, current) ≈
           [1.5, 0.75, -0.25, -1.5, -2.5]
-    @test length(chop_inside_apparent_horizon(previous, current, chopping).u) == 5
+    chopped = chop_inside_apparent_horizon(previous, current, chopping)
+    @test length(chopped.u) == 5
+    horizon_v, horizon_u, horizon_rphi =
+        gp2026_horizon_rphi_series(AdaptiveNLState([previous, chopped]))
+    @test length(horizon_v) == length(horizon_u) == length(horizon_rphi) == 1
+    @test only(horizon_rphi) == 0
     width_chopping = HorizonChoppingConfig(; band_width=0.1, interior_buffer_cells=0,
                                            interior_buffer_width=0.5)
     @test length(chop_inside_apparent_horizon(previous, current, width_chopping).u) == 5
@@ -223,6 +388,27 @@ end
     @test geometric_mass ≈ ones(2)
     @test flux_mass ≈ ones(2)
     @test balance_error ≈ zeros(2)
+    _, _, q_u, expected_q_u, q_residual =
+        charged_charge_flux_u_profile(exact_lower, exact_upper, 0.6)
+    @test q_u ≈ zeros(1)
+    @test expected_q_u ≈ zeros(1)
+    @test q_residual ≈ zeros(1)
+    _, _, geometric_q, flux_q, q_balance_error =
+        charged_flux_integrated_charge_profile(exact_lower, exact_upper, 0.6)
+    @test geometric_q ≈ ones(2)
+    @test flux_q ≈ ones(2)
+    @test q_balance_error ≈ zeros(2)
+    _, _, q_v, expected_q_v, q_v_residual =
+        charged_charge_flux_v_profile(AdaptiveNLState([exact_lower, exact_upper]), 0.6;
+                                      target_u=-1.0)
+    @test q_v ≈ zeros(1)
+    @test expected_q_v ≈ zeros(1)
+    @test q_v_residual ≈ zeros(1)
+    _, _, charged_geometric_mass, charged_flux_mass, charged_balance_error =
+        charged_flux_integrated_mass_profile(exact_lower, exact_upper, 0.6; rn_background=p)
+    @test charged_geometric_mass ≈ ones(2)
+    @test charged_flux_mass ≈ ones(2)
+    @test charged_balance_error ≈ zeros(2)
 
     @test apparent_horizon_location([-1.0, 0.0, 1.0], [0.5, 0.25, -0.25]) ≈ 0.5
     @test isnothing(apparent_horizon_location([-1.0, 0.0], [0.5, 0.25]))
@@ -319,8 +505,28 @@ end
     @test neutral.Ju == 0
     @test neutral.Jv == 0
     @test neutral.Tuv ≈ neutral.alpha^2 / 3.0
+    @test neutral.alpha ≈ -0.4 * 3.0 / (2 * 2.0^2)
 
     auv, avu, _, _, _ = maxwell_rhs(2.0, 3.0, 0.4, neutral)
-    @test avu - auv ≈ 0.4 * 3.0 / 2.0^2
+    @test avu - auv ≈ -0.4 * 3.0 / (2 * 2.0^2)
     @test auv + avu ≈ 0.0
+
+    _, _, _, qu, qv = maxwell_rhs(2.0, 3.0, 0.4, src)
+    @test qu ≈ 2.0^2 * src.Ju / 8
+    @test qv ≈ -2.0^2 * src.Jv / 8
+
+    r, ru, rv = 2.0, -0.3, 0.2
+    psi_re, psi_im = r * 0.1, r * -0.2
+    psi_re_u = r * 0.3 + ru * 0.1
+    psi_re_v = r * -0.1 + rv * 0.1
+    psi_im_u = r * 0.05 + ru * -0.2
+    psi_im_v = r * 0.2 + rv * -0.2
+    from_reduced = stress_energy_reduced_scalar(
+        r, 3.0, 0.4, ru, rv, psi_re, psi_im, psi_re_u, psi_re_v,
+        psi_im_u, psi_im_v, 0.7, -0.4, 0.6,
+    )
+    @test from_reduced.Tuu ≈ src.Tuu
+    @test from_reduced.Tvv ≈ src.Tvv
+    @test from_reduced.Ju ≈ src.Ju
+    @test from_reduced.Jv ≈ src.Jv
 end

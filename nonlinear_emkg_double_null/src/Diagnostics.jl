@@ -175,6 +175,285 @@ function uncharged_flux_integrated_mass_profile(st::AdaptiveNLState; target_v=15
                                                   rn_background)
 end
 
+function charged_u_flux_cells(lower::NLSlice, upper::NLSlice, scalar_charge;
+                              reduced_scalar::Bool=false)
+    upper.v > lower.v || throw(ArgumentError("upper slice must have larger V"))
+    upper_on_lower = lower.u == upper.u ? upper : interpolate_slice(upper, lower.u)
+
+    ncell = length(lower.u) - 1
+    dv = upper.v - lower.v
+    u = [(lower.u[i] + lower.u[i + 1]) / 2 for i in 1:ncell]
+    q = similar(u)
+    expected_q_u = similar(u)
+    expected_mass_u = similar(u)
+    for i in eachindex(u)
+        du = lower.u[i + 1] - lower.u[i]
+        r = corner_average(lower.r[i], lower.r[i + 1],
+                           upper_on_lower.r[i], upper_on_lower.r[i + 1])
+        f = exp(corner_average(lower.logf[i], lower.logf[i + 1],
+                               upper_on_lower.logf[i], upper_on_lower.logf[i + 1]))
+        q[i] = corner_average(lower.Q[i], lower.Q[i + 1],
+                              upper_on_lower.Q[i], upper_on_lower.Q[i + 1])
+        ru = corner_du(lower.r[i], lower.r[i + 1],
+                       upper_on_lower.r[i], upper_on_lower.r[i + 1], du)
+        rv = corner_dv(lower.r[i], lower.r[i + 1],
+                       upper_on_lower.r[i], upper_on_lower.r[i + 1], dv)
+        phi_re = corner_average(lower.phi_re[i], lower.phi_re[i + 1],
+                                upper_on_lower.phi_re[i], upper_on_lower.phi_re[i + 1])
+        phi_im = corner_average(lower.phi_im[i], lower.phi_im[i + 1],
+                                upper_on_lower.phi_im[i], upper_on_lower.phi_im[i + 1])
+        phiu_re = corner_du(lower.phi_re[i], lower.phi_re[i + 1],
+                            upper_on_lower.phi_re[i], upper_on_lower.phi_re[i + 1], du)
+        phiu_im = corner_du(lower.phi_im[i], lower.phi_im[i + 1],
+                            upper_on_lower.phi_im[i], upper_on_lower.phi_im[i + 1], du)
+        Au = corner_average(lower.Au[i], lower.Au[i + 1],
+                            upper_on_lower.Au[i], upper_on_lower.Au[i + 1])
+        Av = corner_average(lower.Av[i], lower.Av[i + 1],
+                            upper_on_lower.Av[i], upper_on_lower.Av[i + 1])
+        source = if reduced_scalar
+            stress_energy_reduced_scalar(r, f, q[i], ru, rv, phi_re, phi_im,
+                                         phiu_re, zero(phiu_re), phiu_im,
+                                         zero(phiu_im), Au, Av, scalar_charge)
+        else
+            stress_energy(r, f, q[i], phi_re, phi_im, phiu_re, zero(phiu_re),
+                          phiu_im, zero(phiu_im), Au, Av, scalar_charge)
+        end
+        expected_q_u[i] = r^2 * source.Ju / 8
+        expected_mass_u[i] = -r^2 * rv * source.Tuu / (4f) +
+                             q[i] * expected_q_u[i] / r
+    end
+    return u, (lower.v + upper.v) / 2, q, expected_q_u, expected_mass_u
+end
+
+"""
+Evaluate the nonlinear charged Maxwell constraint along a fixed-`V` slice:
+
+    Q_U = r^2 J_U / 8.
+
+For the GP2026 production path set `reduced_scalar=true`, because that state
+stores `Psi=r*Phi`. In either representation this corresponds to the
+Gelles-Pretorius law `Q_U=4*pi*r^2*J_GP,U`.
+"""
+function charged_charge_flux_u_profile(lower::NLSlice, upper::NLSlice, scalar_charge;
+                                       reduced_scalar::Bool=false)
+    u, v, q, expected_cells, _ =
+        charged_u_flux_cells(lower, upper, scalar_charge; reduced_scalar)
+    length(q) >= 2 ||
+        throw(ArgumentError("charge-flux check needs at least three U grid points"))
+    centered_u = [(u[i] + u[i + 1]) / 2 for i in firstindex(u):lastindex(u)-1]
+    q_u = diff(q) ./ diff(u)
+    expected_q_u = [(expected_cells[i] + expected_cells[i + 1]) / 2
+                    for i in firstindex(expected_cells):lastindex(expected_cells)-1]
+    return centered_u, v, q_u, expected_q_u, q_u .- expected_q_u
+end
+
+charged_charge_flux_u_profile(lower::NLSlice, upper::NLSlice, ep::EvolutionParams;
+                              reduced_scalar::Bool=false) =
+    charged_charge_flux_u_profile(lower, upper, ep.scalar_charge; reduced_scalar)
+
+function charged_charge_flux_u_profile(st::AdaptiveNLState, scalar_charge; target_v=150.0,
+                                       reduced_scalar::Bool=false)
+    length(st.slices) >= 2 ||
+        throw(ArgumentError("charge-flux check needs at least two V slices"))
+    vmid = [(st.slices[j].v + st.slices[j + 1].v) / 2
+            for j in 1:length(st.slices)-1]
+    _, j = findmin(abs.(vmid .- target_v))
+    return charged_charge_flux_u_profile(st.slices[j], st.slices[j + 1], scalar_charge;
+                                         reduced_scalar)
+end
+
+charged_charge_flux_u_profile(st::AdaptiveNLState, ep::EvolutionParams; target_v=150.0,
+                              reduced_scalar::Bool=false) =
+    charged_charge_flux_u_profile(st, ep.scalar_charge; target_v, reduced_scalar)
+
+"""
+Evaluate the complementary nonlinear Maxwell constraint at fixed `U`:
+
+    Q_V = -r^2 J_V / 8.
+
+The GP2026 production march prescribes `Q` on `U=U0` and advances it with
+the `U` constraint. This profile therefore tests the unevolved Maxwell
+constraint independently.
+"""
+function charged_charge_flux_v_profile(st::AdaptiveNLState, scalar_charge; target_u,
+                                       reduced_scalar::Bool=false)
+    length(st.slices) >= 2 ||
+        throw(ArgumentError("charge-flux check needs at least two V slices"))
+
+    ncell = length(st.slices) - 1
+    v = similar([slice.v for slice in st.slices], ncell)
+    q_v = similar(v)
+    expected_q_v = similar(v)
+    for j in 1:ncell
+        lower, upper = st.slices[j], st.slices[j + 1]
+        dv = upper.v - lower.v
+        v[j] = (lower.v + upper.v) / 2
+        lr = interpolate_linear(lower.u, lower.r, target_u)
+        ur = interpolate_linear(upper.u, upper.r, target_u)
+        lf = interpolate_linear(lower.u, lower.logf, target_u)
+        uf = interpolate_linear(upper.u, upper.logf, target_u)
+        lq = interpolate_linear(lower.u, lower.Q, target_u)
+        uq = interpolate_linear(upper.u, upper.Q, target_u)
+        lphi_re = interpolate_linear(lower.u, lower.phi_re, target_u)
+        uphi_re = interpolate_linear(upper.u, upper.phi_re, target_u)
+        lphi_im = interpolate_linear(lower.u, lower.phi_im, target_u)
+        uphi_im = interpolate_linear(upper.u, upper.phi_im, target_u)
+        r = (lr + ur) / 2
+        rv = (ur - lr) / dv
+        f = exp((lf + uf) / 2)
+        q = (lq + uq) / 2
+        phi_re = (lphi_re + uphi_re) / 2
+        phi_im = (lphi_im + uphi_im) / 2
+        phi_re_v = (uphi_re - lphi_re) / dv
+        phi_im_v = (uphi_im - lphi_im) / dv
+        Au = (interpolate_linear(lower.u, lower.Au, target_u) +
+              interpolate_linear(upper.u, upper.Au, target_u)) / 2
+        Av = (interpolate_linear(lower.u, lower.Av, target_u) +
+              interpolate_linear(upper.u, upper.Av, target_u)) / 2
+        source = if reduced_scalar
+            stress_energy_reduced_scalar(r, f, q, zero(r), rv, phi_re, phi_im,
+                                         zero(r), phi_re_v, zero(r), phi_im_v,
+                                         Au, Av, scalar_charge)
+        else
+            stress_energy(r, f, q, phi_re, phi_im, zero(r), phi_re_v,
+                          zero(r), phi_im_v, Au, Av, scalar_charge)
+        end
+        q_v[j] = (uq - lq) / dv
+        expected_q_v[j] = -r^2 * source.Jv / 8
+    end
+    return v, target_u, q_v, expected_q_v, q_v .- expected_q_v
+end
+
+charged_charge_flux_v_profile(st::AdaptiveNLState, ep::EvolutionParams; target_u,
+                              reduced_scalar::Bool=false) =
+    charged_charge_flux_v_profile(st, ep.scalar_charge; target_u, reduced_scalar)
+
+"""
+Integrate the charged Maxwell constraint in `U`, anchored to the outer
+geometrically sampled charge.
+"""
+function charged_flux_integrated_charge_profile(lower::NLSlice, upper::NLSlice, scalar_charge;
+                                                reduced_scalar::Bool=false)
+    u, v, geometric_q, _, _ =
+        charged_u_flux_cells(lower, upper, scalar_charge; reduced_scalar)
+    _, _, _, expected_q_u, _ =
+        charged_charge_flux_u_profile(lower, upper, scalar_charge; reduced_scalar)
+    flux_q = similar(geometric_q)
+    flux_q[1] = geometric_q[1]
+    for i in 2:length(flux_q)
+        flux_q[i] = flux_q[i - 1] + (u[i] - u[i - 1]) * expected_q_u[i - 1]
+    end
+    return u, v, geometric_q, flux_q, geometric_q .- flux_q
+end
+
+charged_flux_integrated_charge_profile(lower::NLSlice, upper::NLSlice, ep::EvolutionParams;
+                                       reduced_scalar::Bool=false) =
+    charged_flux_integrated_charge_profile(lower, upper, ep.scalar_charge; reduced_scalar)
+
+function charged_flux_integrated_charge_profile(st::AdaptiveNLState, scalar_charge;
+                                                target_v=150.0,
+                                                reduced_scalar::Bool=false)
+    length(st.slices) >= 2 ||
+        throw(ArgumentError("flux-integrated charge needs at least two V slices"))
+    vmid = [(st.slices[j].v + st.slices[j + 1].v) / 2
+            for j in 1:length(st.slices)-1]
+    _, j = findmin(abs.(vmid .- target_v))
+    return charged_flux_integrated_charge_profile(st.slices[j], st.slices[j + 1],
+                                                  scalar_charge; reduced_scalar)
+end
+
+charged_flux_integrated_charge_profile(st::AdaptiveNLState, ep::EvolutionParams;
+                                       target_v=150.0, reduced_scalar::Bool=false) =
+    charged_flux_integrated_charge_profile(st, ep.scalar_charge; target_v, reduced_scalar)
+
+"""
+Evaluate the charged renormalized Hawking-mass balance law:
+
+    varpi_U = -r^2 r_V T_UU/(4f) + Q Q_U/r.
+
+For the source scalar `T_UU=2|D_U Phi|^2`; on reduced-field runs `Phi` is
+reconstructed from `Psi=r*Phi`. The first term reduces to MRT Eq. (14) when
+the scalar is real and uncharged.
+"""
+function charged_mass_flux_u_profile(lower::NLSlice, upper::NLSlice, scalar_charge;
+                                     rn_background::Union{Nothing,RNParams}=nothing,
+                                     reduced_scalar::Bool=false)
+    u, v, mass = renormalized_hawking_mass_profile(lower, upper; rn_background)
+    _, _, _, _, expected_cells =
+        charged_u_flux_cells(lower, upper, scalar_charge; reduced_scalar)
+    length(mass) >= 2 ||
+        throw(ArgumentError("mass-flux check needs at least three U grid points"))
+    centered_u = [(u[i] + u[i + 1]) / 2 for i in firstindex(u):lastindex(u)-1]
+    mass_u = diff(mass) ./ diff(u)
+    expected_mass_u = [(expected_cells[i] + expected_cells[i + 1]) / 2
+                       for i in firstindex(expected_cells):lastindex(expected_cells)-1]
+    return centered_u, v, mass_u, expected_mass_u, mass_u .- expected_mass_u
+end
+
+charged_mass_flux_u_profile(lower::NLSlice, upper::NLSlice, ep::EvolutionParams;
+                            rn_background::Union{Nothing,RNParams}=nothing,
+                            reduced_scalar::Bool=false) =
+    charged_mass_flux_u_profile(lower, upper, ep.scalar_charge; rn_background, reduced_scalar)
+
+function charged_mass_flux_u_profile(st::AdaptiveNLState, scalar_charge; target_v=150.0,
+                                     rn_background::Union{Nothing,RNParams}=nothing,
+                                     reduced_scalar::Bool=false)
+    length(st.slices) >= 2 ||
+        throw(ArgumentError("mass-flux check needs at least two V slices"))
+    vmid = [(st.slices[j].v + st.slices[j + 1].v) / 2
+            for j in 1:length(st.slices)-1]
+    _, j = findmin(abs.(vmid .- target_v))
+    return charged_mass_flux_u_profile(st.slices[j], st.slices[j + 1], scalar_charge;
+                                       rn_background, reduced_scalar)
+end
+
+charged_mass_flux_u_profile(st::AdaptiveNLState, ep::EvolutionParams; target_v=150.0,
+                            rn_background::Union{Nothing,RNParams}=nothing,
+                            reduced_scalar::Bool=false) =
+    charged_mass_flux_u_profile(st, ep.scalar_charge; target_v, rn_background, reduced_scalar)
+
+"""
+Integrate the charged mass-balance law in `U`, anchored to the outer
+geometrically reconstructed mass.
+"""
+function charged_flux_integrated_mass_profile(lower::NLSlice, upper::NLSlice, scalar_charge;
+                                              rn_background::Union{Nothing,RNParams}=nothing,
+                                              reduced_scalar::Bool=false)
+    u, v, geometric_mass = renormalized_hawking_mass_profile(lower, upper; rn_background)
+    _, _, _, expected_mass_u, _ =
+        charged_mass_flux_u_profile(lower, upper, scalar_charge; rn_background, reduced_scalar)
+    flux_mass = similar(geometric_mass)
+    flux_mass[1] = geometric_mass[1]
+    for i in 2:length(flux_mass)
+        flux_mass[i] = flux_mass[i - 1] + (u[i] - u[i - 1]) * expected_mass_u[i - 1]
+    end
+    return u, v, geometric_mass, flux_mass, geometric_mass .- flux_mass
+end
+
+charged_flux_integrated_mass_profile(lower::NLSlice, upper::NLSlice, ep::EvolutionParams;
+                                     rn_background::Union{Nothing,RNParams}=nothing,
+                                     reduced_scalar::Bool=false) =
+    charged_flux_integrated_mass_profile(lower, upper, ep.scalar_charge;
+                                         rn_background, reduced_scalar)
+
+function charged_flux_integrated_mass_profile(st::AdaptiveNLState, scalar_charge; target_v=150.0,
+                                              rn_background::Union{Nothing,RNParams}=nothing,
+                                              reduced_scalar::Bool=false)
+    length(st.slices) >= 2 ||
+        throw(ArgumentError("flux-integrated mass needs at least two V slices"))
+    vmid = [(st.slices[j].v + st.slices[j + 1].v) / 2
+            for j in 1:length(st.slices)-1]
+    _, j = findmin(abs.(vmid .- target_v))
+    return charged_flux_integrated_mass_profile(st.slices[j], st.slices[j + 1],
+                                                scalar_charge; rn_background, reduced_scalar)
+end
+
+charged_flux_integrated_mass_profile(st::AdaptiveNLState, ep::EvolutionParams; target_v=150.0,
+                                     rn_background::Union{Nothing,RNParams}=nothing,
+                                     reduced_scalar::Bool=false) =
+    charged_flux_integrated_mass_profile(st, ep.scalar_charge;
+                                         target_v, rn_background, reduced_scalar)
+
 function outgoing_expansion_profile(lower::NLSlice, upper::NLSlice)
     upper.v > lower.v || throw(ArgumentError("upper slice must have larger V"))
     upper_on_lower = lower.u == upper.u ? upper : interpolate_slice(upper, lower.u)
@@ -207,6 +486,40 @@ function apparent_horizon_location(u::AbstractVector, rv::AbstractVector)
     i = crossing
     fraction = rv[i - 1] / (rv[i - 1] - rv[i])
     return u[i - 1] + fraction * (u[i] - u[i - 1])
+end
+
+"""
+Return the GP2026 reduced scalar amplitude `|r*phi_GP|` on one stored slice.
+
+This assumes the slice was evolved with `reduced_scalar=true`, so its scalar
+arrays contain `Psi=sqrt(32*pi)*r*phi_GP`.
+"""
+function gp2026_rphi_profile(slice::NLSlice)
+    return slice.u, hypot.(slice.phi_re, slice.phi_im) ./ sqrt(32 * pi)
+end
+
+"""
+Sample `|r*phi_GP|` at the apparent horizon on all GP2026 slices where a
+zero of `r_V` is bracketed.
+"""
+function gp2026_horizon_rphi_series(st::AdaptiveNLState)
+    T = eltype(first(st.slices).r)
+    horizon_v = T[]
+    horizon_u = T[]
+    amplitude = T[]
+    for j in 2:length(st.slices)
+        lower, upper = st.slices[j - 1], st.slices[j]
+        u = [(upper.u[i] + upper.u[i + 1]) / 2 for i in 1:length(upper.u)-1]
+        rv = adaptive_outgoing_expansion(lower, upper)
+        uh = apparent_horizon_location(u, rv)
+        isnothing(uh) && continue
+        psi_re = interpolate_linear(upper.u, upper.phi_re, uh)
+        psi_im = interpolate_linear(upper.u, upper.phi_im, uh)
+        push!(horizon_v, upper.v)
+        push!(horizon_u, uh)
+        push!(amplitude, hypot(psi_re, psi_im) / sqrt(32 * pi))
+    end
+    return horizon_v, horizon_u, amplitude
 end
 
 function fit_power_law(x, y; xmin=nothing, xmax=nothing)

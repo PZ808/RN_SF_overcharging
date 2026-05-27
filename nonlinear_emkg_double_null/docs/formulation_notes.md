@@ -12,6 +12,24 @@ Baake/Rinne `arXiv:1610.08352v2` evolves the fully coupled Einstein-Maxwell-Klei
 
 Gelles/Pretorius `arXiv:2503.04881v2` evolves charged scalar electrodynamics on a fixed RN background using compactified double-null MRT coordinates. The code starts from this coordinate system because the requested end state is "Baake/Rinne physics in Gelles/Pretorius coordinates."
 
+Gelles/Pretorius `arXiv:2602.11256v1`, submitted on 11 February 2026, now
+provides that end state directly: fully nonlinear Einstein-Maxwell-charged
+scalar evolution in double-null MRT gauge. The nonlinear module is being
+aligned against its Eqs. (3)-(10), while the MRT uncharged tests remain the
+baseline regression.
+
+The current equation mapping is:
+
+| Gelles/Pretorius equation | Stored-variable conversion | Code status |
+| :--- | :--- | :--- |
+| `ds^2=-2 f_GP dU dV+r^2 dOmega^2` | `f_code=2 f_GP` | implemented |
+| Eq. (3), `r_UV` | Coulomb coefficient becomes `-f_code(1-Q^2/r^2)/(4r)` | implemented and RN tested |
+| Eq. (4), `f_UV` | evolve `log(f_code)`; sources convert `Psi=sqrt(32 pi) r phi_GP` to `Phi=Psi/r` | implemented |
+| Eqs. (7)-(8), null metric constraints | `r T_UU/(8 f_code)` and `r T_VV/(8 f_code)` with `T_aa=2|D_a Phi|^2` | implemented |
+| Scalar evolution in arXiv:2503.04881 Appendix D | GP2026 path evolves `Psi=sqrt(32 pi) r phi_GP` with the published `bar xi, bar Pi` equations | implemented |
+| Eq. (10), renormalized mass | `M=r[1+4r_Ur_V/f_code+Q^2/r^2]/2` | implemented and conservatively checked |
+| Maxwell constraints from arXiv:2503.04881 Appendix D | `Q_U=r^2J_U/8`, `Q_V=-r^2J_V/8`, `F_UV=-Qf_code/(2r^2)` | implemented and conservatively checked |
+
 ## Current Implemented System
 
 There are now two implementation tracks.
@@ -58,48 +76,64 @@ Its evolved variables are:
 - `Au, Av`
 - enclosed charge `Q`
 
-The scaffold uses gauge-covariant scalar derivatives in the metric sources:
+The older MRT regression branch retains the normalized scalar:
 
 ```text
-D_a phi = partial_a phi - i e A_a phi
+Phi = sqrt(32 pi) phi_GP
+D_a Phi = partial_a Phi - i e A_a Phi
 ```
 
-and evolves the enclosed charge from the null Maxwell constraints:
+The GP2026 production branch instead stores and evolves the paper's reduced
+scalar when called with `reduced_scalar=true`:
 
 ```text
-Q_u =  4 pi r^2 J_u
-Q_v = -4 pi r^2 J_v
+Psi = r Phi = sqrt(32 pi) r phi_GP
+Psi_re,UV = (r_UV/r) Psi_re + e^2 A_U A_V Psi_re
+            - e(A_V Psi_im,U + A_U Psi_im,V)
+Psi_im,UV = (r_UV/r) Psi_im + e^2 A_U A_V Psi_im
+            + e(A_V Psi_re,U + A_U Psi_re,V)
 ```
 
-`src/StressEnergy.jl` now isolates the matter sources in this convention:
+Stress-energy and Maxwell current evaluation converts `Psi` back to `Phi`
+and its derivatives. Since the paper uses `ds^2=-2 f_GP dU dV`, while this
+module stores `f=2 f_GP`, its Faraday component and Maxwell constraints are:
 
 ```text
-T_uu = 2 |D_u phi|^2
-T_vv = 2 |D_v phi|^2
+F_UV = -Q f / (2 r^2)
+J_a = 2 e Im[Phi^* D_a Phi] = 32 pi J_GP,a
+Q_U =  r^2 J_U / 8
+Q_V = -r^2 J_V / 8
+```
+
+`src/StressEnergy.jl` isolates the reduced scalar sources in this convention:
+
+```text
+T_UU = 2 |D_U Phi|^2
+T_VV = 2 |D_V Phi|^2
 T_uv = alpha^2 / f
-T_theta theta = 4 r^2 Re[(D_u phi)^* D_v phi] / f + 2 r^2 alpha^2 / f^2
-J_a = 2 e Im[phi^* D_a phi]
-alpha = Q f / r^2
+T_theta theta = 4 r^2 Re[(D_U Phi)^* D_V Phi] / f + 2 r^2 alpha^2 / f^2
+alpha = -Q f / (2 r^2)
 F_UV = A_V,U - A_U,V = alpha
 ```
 
-These are the canonical complex-scalar and Maxwell stress components for
-`ds^2 = -f du dv + r^2 dOmega^2`, before choosing any extra overall
-Einstein-equation normalization. The helper functions
+The Maxwell entries omit the Gaussian-unit `1/(4 pi)` coefficient because the
+metric update already carries its Coulomb terms explicitly through `Q`; use
+`maxwell_weight=1/(4*pi)` when requesting physical Maxwell stress output. The
+helper functions
 `outgoing_constraint_source` and `ingoing_constraint_source` provide the
 slots used by the two null Raychaudhuri constraints, normalized so the
-single-real-scalar uncharged limit matches the MRT `1/4 r f^-1 phi_a^2`
+single-real-scalar uncharged limit matches the MRT `1/4 r f^-1 Phi_a^2`
 constraint source.
 
 ## Missing Validation Work
 
 The next physics/code steps are:
 
-- verify every factor of 2 and 4 pi against the chosen action normalization;
-- derive and solve the nonlinear constraints on the two initial null legs;
+- converge the charged conservative charge and mass-balance residuals;
+- complete charged initial-data construction for the intended MRT experiments;
 - validate that the uncharged limit reproduces Murata-Reall-Tanahashi;
 - validate that the fixed-metric small-amplitude limit reproduces Gelles/Pretorius;
-- define apparent horizon, Bondi mass, and horizon charge diagnostics in the double-null gauge.
+- validate horizon charge accumulation against the fixed and nonlinear Gelles/Pretorius results.
 
 ## Current Diagnostics
 
@@ -344,6 +378,119 @@ conservative follow-up is to treat flux-integrated `varpi` as the primary
 uncharged Bondi-mass diagnostic and derive the analogous charged scalar
 mass/charge balance laws before relying on horizon charge-accumulation
 measurements.
+
+The charged nonlinear diagnostic now follows `arXiv:2602.11256v1`. In the
+stored scalar convention, the conservative fixed-`V` laws implemented in
+`src/Diagnostics.jl` are:
+
+```text
+Q_U = r^2 J_U / 8
+varpi_U = -r^2 r_V T_UU / (4 f) + Q Q_U / r
+```
+
+The initializer now integrates the `Q_V=-r^2 J_V/8` Maxwell constraint on its
+ingoing matter leg before constructing the associated quasi-Lorenz potential.
+For direct continuation of the validated MRT experiment,
+`initialize_mrt2013_charged_outgoing_wave!` seeds MRT's initially real
+outgoing pulse. In quasi-Lorenz gauge, it sets `A_U=0` on the outgoing
+initial leg and `A_V=0` on the ingoing initial leg, while integrating the
+transverse potential components required by the Coulomb field. Because the
+outgoing scalar pulse is initially real and `A_U=0` along its support, its
+initial `Q_U` source vanishes, so the uncharged degenerate-horizon `f0`
+tuning remains applicable at the initial slice even when `e` is nonzero.
+`examples/check_nonlinear_charged_balance.jl` is a short-run regression that
+reports both algebraic-versus-flux-integrated `Q` and
+algebraic-versus-flux-integrated `varpi`; these residuals should be converged
+before using the nonlinear charged code for horizon scaling claims.
+
+This diagnostic exposed an evolution inconsistency immediately: the original
+nonlinear cell update treated `A_U,V` and `A_V,U`, which are first-order
+Maxwell constraints, as if they were mixed second derivatives in a diamond
+update. The current repair imposes those two potential equations with
+centered corner derivatives and restores the quasi-Lorenz initial Coulomb
+potential. For charge, the production data prescribe `Q(V)` on `U=U0`, so
+the interior march advances
+
+```text
+Q_11 = Q_01 + Delta U (Q_U)_corner.
+```
+
+The complementary constraint `Q_V=-r^2 J_V/8` is now available as
+`charged_charge_flux_v_profile` and is not enforced by this update.
+For the charged MRT balance regression with `epsilon=0.02`, `e=0.6`, and
+`V approximately 4`, the production-oriented update gives:
+
+| initial `U` points | `Delta V` | `max abs(Q_U-source)` | `max abs(varpi_U-source)` | `max abs(Q-Q_flux)` | `max abs(varpi-varpi_flux)` |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 531 | 0.020 | 1.76e-7 | 1.89e-7 | 1.41e-7 | 7.93e-8 |
+| 1061 | 0.020 | 1.77e-7 | 1.75e-7 | 1.41e-7 | 7.66e-8 |
+| 531 | 0.010 | 8.83e-8 | 1.04e-7 | 7.05e-8 | 4.18e-8 |
+
+These residuals remain small compared with the physical fluxes
+(`max abs(Q_U) approximately 5.35e-5`,
+`max abs(varpi_U) approximately 2.66e-4`) and reduce with `Delta V`.
+The previously recorded parts-in-`10^9` charge numbers came from a symmetric
+charge corner trial that is inconsistent with an ingoing boundary already
+carrying a nonconstant `Q(V)` profile; that trial is not used.
+
+`initialize_gp2026_single_pulse!` now implements the 2026 production family:
+ingoing data on `N_B`, `A0=0.01`, `omega_tilde=1`, `(U0,V0)=(-1,0)`,
+`M0=1`, and a default near-threshold background charge
+`Q0=1.0033218`. The code uses the paper's metric convention through
+`f_code=2 f_GP` and stores the boundary pulse directly as
+`Psi=sqrt(32*pi) r phi_GP`. For the initial radius gauge, Appendix A/B contain mutually
+inconsistent signs; following the main text and the quoted numerical domain,
+the implementation uses
+
+```text
+r(U,V0) = M0 - U/2,  r_U = -1/2,
+r_star(r(U0,V)) = r_star(M0-U0/2) + (V-V0)/2.
+```
+
+This yields `r(1.6,0)=0.2`, as stated in the paper. A boundary diagnostic
+then found and fixed a separate sign error in our transcription of
+`d[A(V) cos(omega V)]/dV`. At the paper parameters and `Delta V=0.08`,
+the corrected initializer gives `Delta Q=0.01477994` and
+`max abs(Q_V-source)=1.64e-6`; the latter decreases by approximately four
+under each halving of `Delta V`. The short production evolution in
+`examples/check_gp2026_short_balance.jl` gives:
+
+| `Delta V` | `max abs(Q_U-source)` | `max abs(Q_V-source)` | `max abs(Q-Q_flux)` |
+| ---: | ---: | ---: | ---: |
+| 0.080 | 8.86e-7 | 1.68e-6 | 1.49e-7 |
+| 0.040 | 4.41e-7 | 4.47e-7 | 7.51e-8 |
+
+Re-running these checks after converting the GP2026 evolution path from
+`Phi` to the published reduced field `Psi=r*Phi` leaves the quoted short
+balance residuals and the long-run transition below unchanged at the reported
+precision. The representation discrepancy is therefore repaired but is not
+the cause of the threshold disagreement.
+
+The first longer run is not yet a reproduction of the paper's critical
+solution. `examples/check_gp2026_long_evolution.jl` reports horizon
+appearance and loss of finiteness rather than silently returning late-time
+diagnostics. Using the implemented internally consistent initial-radius gauge,
+`Delta U=0.01`, and `Delta V=0.08` gives:
+
+| `Q0` | requested `Vmax` | first trapped `V` | first nonfinite `V` | outcome |
+| ---: | ---: | ---: | ---: | :--- |
+| 1.0033218 | 100 | 6.56 | 50.64 | apparent horizon forms during the pulse; evolution fails later |
+| 1.0200000 | 400 | none | none | finite, dispersive control run |
+
+The reduced-field diagnostic `gp2026_horizon_rphi_series` now directly
+samples the paper's observable `|r phi_GP|` at detected apparent horizons.
+For the `Q0=1.0033218` run above it decreases from `1.0485e-2` at `V=6.56`
+to `1.3148e-4` at `V=50.56` over 551 finite horizon samples.
+
+For the finite `Q0=1.02` control at `V approximately 400`,
+`r_V` remains positive in the range `0.49366` to `0.49468` and
+`max abs(Q_U-source)=2.92e-11`. The alleged threshold value from the paper
+therefore does not agree with this implementation yet. This discrepancy is
+already present during the transient and is not explained by late-time
+horizon resolution. The next audit must address the coordinate-dependent
+incoming-pulse normalization and/or remaining nonlinear equation convention
+differences before implementing the paper's `Delta U=C/f(Vmax)` production
+refinement or attempting threshold scaling fits.
 
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time
