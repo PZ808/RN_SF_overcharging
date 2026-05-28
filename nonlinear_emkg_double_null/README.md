@@ -22,9 +22,11 @@ Here `phi_GP` denotes the canonically normalized scalar used in
 arXiv:2602.11256. The GP2026 driver evolves the paper's reduced field
 `r*phi` with `reduced_scalar=true` and converts back to `Phi` only when
 computing stress-energy and Maxwell current sources. Conservative charge and
-mass-balance diagnostics are now available; the next important work is
-locating the remaining initial-gauge/threshold discrepancy before
-horizon-accumulation validation.
+mass-balance diagnostics are now available. A GP2026 paper-style driver also
+marches complete fixed-`U` rows with `Delta U=C/f_GP(U,Vmax)` and the
+published hyperbolic `Q` equation, with the older constraint march retained
+as a comparison mode. The next important work is controlling its long-run
+constraint residuals before horizon-accumulation validation.
 
 ## Layout
 
@@ -56,5 +58,6 @@ julia --project=. examples/check_nonlinear_charged_balance.jl
 julia --project=. examples/check_gp2026_initial_data.jl
 julia --project=. examples/check_gp2026_short_balance.jl
 julia --project=. examples/check_gp2026_long_evolution.jl
+julia --project=. examples/check_gp2026_u_refinement.jl
 julia --project=. -e 'using Pkg; Pkg.test()'
 ```

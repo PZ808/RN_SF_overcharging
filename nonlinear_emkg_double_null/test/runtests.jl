@@ -180,6 +180,37 @@ end
     @test maximum(abs, q_v_residual) < 1.2e-5
 end
 
+@testset "GP2026 paper U-step evolution" begin
+    q0 = 1.0033218
+    ep = EvolutionParams(rn=RNParams(1.0, q0), scalar_charge=0.6 / q0,
+                         amplitude=0.01, omega=1.0)
+    grid = gp2026_grid(; nu=2, nv=101, U0=-1.0, V0=0.0, U1=-0.99, V1=20.0)
+    state = NLState(grid)
+    initialize_gp2026_single_pulse!(state, grid, ep)
+    initial = row_from_rectangular(state, grid, 1)
+
+    boundary = gp2026_na_boundary_point(-0.9, ep)
+    @test boundary.r ≈ 1.45
+    @test boundary.logf ≈ log(gp2026_fcorner_code(ep))
+    @test iszero(boundary.phi_re)
+    @test iszero(boundary.phi_im)
+    @test iszero(boundary.Au)
+    @test boundary.Q == q0
+
+    C = 0.1
+    evolved = evolve_gp2026_u_adaptive(initial, ep; Umax=-0.9, C, iterations=10)
+    expected_first_du = min(0.1, 2C / exp(initial.logf[end]))
+    @test evolved.rows[2].u - evolved.rows[1].u ≈ expected_first_du
+    @test last(evolved.rows).u ≈ -0.9
+    @test all(row -> all(isfinite, row.r) && all(isfinite, row.logf) &&
+                     all(isfinite, row.phi_re) && all(isfinite, row.phi_im) &&
+                     all(isfinite, row.Au) && all(isfinite, row.Av) &&
+                     all(isfinite, row.Q), evolved.rows)
+    transposed = adaptive_state_from_u_rows(evolved)
+    @test length(transposed.slices) == length(grid.v)
+    @test last(transposed.slices).u == [row.u for row in evolved.rows]
+end
+
 @testset "MRT ingoing initial leg normalization" begin
     ep = EvolutionParams(rn=RNParams(1.0, 1.0), scalar_charge=0.0, amplitude=0.0)
     grid = mrt2013_grid(; nu=16, nv=48, U0=-5.1, V0=0.0, U1=-1.0e-3, V1=20.0)

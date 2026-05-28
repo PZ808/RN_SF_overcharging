@@ -23,6 +23,29 @@ struct AdaptiveNLState{T<:Real}
     slices::Vector{NLSlice{T}}
 end
 
+"""
+One nonlinear GP2026 row at fixed `U`.
+
+This storage orientation supports the production rule
+`Delta U = C/f_GP(U,Vmax)`, which selects the next outgoing hypersurface
+after the current row has been evolved to the outer `V` boundary.
+"""
+struct NLRow{T<:Real}
+    u::T
+    v::Vector{T}
+    r::Vector{T}
+    logf::Vector{T}
+    phi_re::Vector{T}
+    phi_im::Vector{T}
+    Au::Vector{T}
+    Av::Vector{T}
+    Q::Vector{T}
+end
+
+struct UAdaptiveNLState{T<:Real}
+    rows::Vector{NLRow{T}}
+end
+
 struct NLPoint{T<:Real}
     u::T
     v::T
@@ -155,6 +178,31 @@ function AdaptiveNLState(slices::AbstractVector{<:NLSlice})
     return AdaptiveNLState{T}(converted)
 end
 
+function NLRow(u::Real, v::AbstractVector{<:Real}, r::AbstractVector{<:Real},
+               logf::AbstractVector{<:Real}, phi_re::AbstractVector{<:Real},
+               phi_im::AbstractVector{<:Real}, Au::AbstractVector{<:Real},
+               Av::AbstractVector{<:Real}, Q::AbstractVector{<:Real})
+    n = length(v)
+    require_same_length("NLRow", n, r, logf, phi_re, phi_im, Au, Av, Q)
+    require_strictly_increasing(v, "v")
+    T = promote_type(typeof(u), eltype(v), eltype(r), eltype(logf), eltype(phi_re),
+                     eltype(phi_im), eltype(Au), eltype(Av), eltype(Q))
+    return NLRow{T}(convert(T, u), collect(T, v), collect(T, r), collect(T, logf),
+                    collect(T, phi_re), collect(T, phi_im), collect(T, Au),
+                    collect(T, Av), collect(T, Q))
+end
+
+function UAdaptiveNLState(rows::AbstractVector{<:NLRow})
+    isempty(rows) && throw(ArgumentError("UAdaptiveNLState needs at least one row"))
+    T = promote_type(map(row -> typeof(row.u), rows)...)
+    converted = NLRow{T}[]
+    for row in rows
+        push!(converted, NLRow(row.u, row.v, row.r, row.logf, row.phi_re,
+                               row.phi_im, row.Au, row.Av, row.Q))
+    end
+    return UAdaptiveNLState{T}(converted)
+end
+
 function slice_point(slice::NLSlice, i::Int)
     1 <= i <= length(slice.u) || throw(BoundsError(slice.u, i))
     return NLPoint(slice.u[i], slice.v, slice.r[i], slice.logf[i], slice.phi_re[i],
@@ -178,8 +226,31 @@ function slice_from_rectangular(st::NLState, g::Grid, j::Int)
                    st.phi_im[:, j], st.Au[:, j], st.Av[:, j], st.Q[:, j])
 end
 
+function row_from_rectangular(st::NLState, g::Grid, i::Int)
+    1 <= i <= length(g.u) || throw(BoundsError(g.u, i))
+    return NLRow(g.u[i], g.v, st.r[i, :], st.logf[i, :], st.phi_re[i, :],
+                 st.phi_im[i, :], st.Au[i, :], st.Av[i, :], st.Q[i, :])
+end
+
 function adaptive_state_from_rectangular(st::NLState, g::Grid)
     return AdaptiveNLState([slice_from_rectangular(st, g, j) for j in eachindex(g.v)])
+end
+
+function adaptive_state_from_u_rows(st::UAdaptiveNLState)
+    rows = st.rows
+    reference_v = first(rows).v
+    for row in rows
+        row.v == reference_v ||
+            throw(ArgumentError("all U-adaptive rows must share the same V grid"))
+    end
+    u = [row.u for row in rows]
+    return AdaptiveNLState([
+        NLSlice(reference_v[j], u, [row.r[j] for row in rows],
+                [row.logf[j] for row in rows], [row.phi_re[j] for row in rows],
+                [row.phi_im[j] for row in rows], [row.Au[j] for row in rows],
+                [row.Av[j] for row in rows], [row.Q[j] for row in rows])
+        for j in eachindex(reference_v)
+    ])
 end
 
 function west_boundary_from_rectangular(st::NLState, g::Grid)
@@ -541,6 +612,83 @@ function fill_northwest_boundary!(st::NLState, point::NLPoint)
     st.Av[1, 2] = point.Av
     st.Q[1, 2] = point.Q
     return st
+end
+
+function gp2026_na_boundary_point(U::Real, ep::EvolutionParams; U0=-1.0, V0=0.0,
+                                  M0=ep.rn.M)
+    U >= U0 || throw(ArgumentError("GP2026 N_A boundary requires U >= U0"))
+    r0 = gp2026_extremal_gauge_initial_radius(U0, V0; U0, V0, M0)
+    r = gp2026_extremal_gauge_initial_radius(U, V0; U0, V0, M0)
+    fcorner = gp2026_fcorner_code(ep; U0, V0, M0)
+    # Along N_A the scalar vanishes and f_code is constant. Integrating
+    # A_V,U=-Q*f_code/(4r^2), with r_U=-1/2, gives this exact boundary value.
+    Av = -ep.rn.Q0 * fcorner / 2 * (inv(r) - inv(r0))
+    return NLPoint(U, V0, r, log(fcorner), zero(r), zero(r), zero(r), Av, ep.rn.Q0)
+end
+
+function advance_u_row(previous::NLRow, south::NLPoint, ep::EvolutionParams;
+                       iterations::Int=5, subtract_rn_background::Bool=false,
+                       reduced_scalar::Bool=false, hyperbolic_charge::Bool=false)
+    south.u > previous.u ||
+        throw(ArgumentError("south.u must be larger than the previous row U"))
+    require_same_coordinate(first(previous.v), south.v, "south V")
+    grid = Grid([previous.u, south.u], previous.v)
+    st = NLState(grid)
+    st.r[1, :] .= previous.r
+    st.logf[1, :] .= previous.logf
+    st.phi_re[1, :] .= previous.phi_re
+    st.phi_im[1, :] .= previous.phi_im
+    st.Au[1, :] .= previous.Au
+    st.Av[1, :] .= previous.Av
+    st.Q[1, :] .= previous.Q
+    st.r[2, 1] = south.r
+    st.logf[2, 1] = south.logf
+    st.phi_re[2, 1] = south.phi_re
+    st.phi_im[2, 1] = south.phi_im
+    st.Au[2, 1] = south.Au
+    st.Av[2, 1] = south.Av
+    st.Q[2, 1] = south.Q
+    for j in 1:length(previous.v)-1
+        step_nonlinear_cell!(st, grid, ep, 1, j;
+                             iterations, subtract_rn_background, reduced_scalar,
+                             hyperbolic_charge)
+    end
+    return row_from_rectangular(st, grid, 2)
+end
+
+"""
+Evolve GP2026 initial data with the paper's production `U`-step criterion.
+
+The paper uses `ds^2=-2*f_GP*dU*dV`, while the solver stores
+`f_code=2*f_GP`. Therefore its `Delta U=C/f_GP(U,Vmax)` rule is
+`Delta U=2C/f_code(U,Vmax)` here.
+"""
+function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6, C=0.6,
+                                  U0=initial.u, V0=first(initial.v), M0=ep.rn.M,
+                                  iterations::Int=10, max_rows::Int=100_000,
+                                  hyperbolic_charge::Bool=true)
+    C > 0 || throw(ArgumentError("C must be positive"))
+    Umax > initial.u || throw(ArgumentError("Umax must exceed initial U"))
+    max_rows >= 2 || throw(ArgumentError("max_rows must be at least 2"))
+    rows = [initial]
+    while last(rows).u < Umax && length(rows) < max_rows
+        previous = last(rows)
+        fcode_outer = exp(last(previous.logf))
+        isfinite(fcode_outer) && fcode_outer > 0 || break
+        du = 2C / fcode_outer
+        next_u = min(Umax, previous.u + du)
+        next_u > previous.u || break
+        south = gp2026_na_boundary_point(next_u, ep; U0, V0, M0)
+        next = advance_u_row(previous, south, ep;
+                             iterations, reduced_scalar=true, hyperbolic_charge)
+        push!(rows, next)
+        all(isfinite, next.r) && all(isfinite, next.logf) &&
+            all(isfinite, next.phi_re) && all(isfinite, next.phi_im) &&
+            all(isfinite, next.Au) && all(isfinite, next.Av) &&
+            all(isfinite, next.Q) ||
+            break
+    end
+    return UAdaptiveNLState(rows)
 end
 
 """

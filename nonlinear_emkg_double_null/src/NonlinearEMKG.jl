@@ -135,6 +135,16 @@ function gp2026_extremal_gauge_rv(U, V; U0=-1.0, V0=0.0, M0=1.0)
     return metric_F(r, gp2026_reference_extreme(M0)) / 2
 end
 
+function gp2026_fcorner_code(ep::EvolutionParams; U0=-1.0, V0=0.0, M0=ep.rn.M)
+    r0 = gp2026_extremal_gauge_initial_radius(U0, V0; U0, V0, M0)
+    ru0 = gp2026_extremal_gauge_ru(U0; M0)
+    rv0 = gp2026_extremal_gauge_rv(U0, V0; U0, V0, M0)
+    denominator = ep.rn.Q0^2 + r0 * (r0 - 2M0)
+    fcorner = -4 * r0^2 * ru0 * rv0 / denominator
+    fcorner > 0 || throw(ArgumentError("GP2026 initial corner requires positive f"))
+    return fcorner
+end
+
 function trapezoidal_integral(x::AbstractVector{<:Real}, y::AbstractVector{<:Real})
     length(x) == length(y) || throw(ArgumentError("integration arrays must have equal length"))
     integral = zero(promote_type(eltype(x), eltype(y)))
@@ -388,12 +398,8 @@ function initialize_gp2026_single_pulse!(st::NLState, g::Grid, ep::EvolutionPara
         st.phi_im[i0, j] = -scalar_scale * amplitude * sin(phase)
     end
 
-    r0 = st.r[i0, j0]
-    ru0 = gp2026_extremal_gauge_ru(U0; M0)
     rv0 = gp2026_extremal_gauge_rv(U0, V0; U0, V0, M0)
-    denominator = ep.rn.Q0^2 + r0 * (r0 - 2M0)
-    fcorner = -4 * r0^2 * ru0 * rv0 / denominator
-    fcorner > 0 || throw(ArgumentError("GP2026 initial corner requires positive f"))
+    fcorner = gp2026_fcorner_code(ep; U0, V0, M0)
 
     # No scalar data on N_A: r_U/f is constant there and r_U=-1/2.
     st.logf[:, j0] .= log(fcorner)
@@ -566,12 +572,14 @@ end
 
 function evolve_nonlinear!(st::NLState, g::Grid, ep::EvolutionParams; iterations::Int=5,
                            subtract_rn_background::Bool=false,
-                           reduced_scalar::Bool=false)
+                           reduced_scalar::Bool=false,
+                           hyperbolic_charge::Bool=false)
     nu, nv = size(g)
     for i in 1:nu-1
         for j in 1:nv-1
             step_nonlinear_cell!(st, g, ep, i, j;
-                                 iterations, subtract_rn_background, reduced_scalar)
+                                 iterations, subtract_rn_background, reduced_scalar,
+                                 hyperbolic_charge)
         end
     end
     return st
@@ -630,6 +638,18 @@ function charged_reduced_scalar_rhs(r, ruv, psi_re_u, psi_re_v, psi_im_u, psi_im
     return re_uv, im_uv
 end
 
+function charged_reduced_charge_rhs(r, f, q, psi_re, psi_im, psi_re_u, psi_re_v,
+                                    psi_im_u, psi_im_v, Au, Av, e)
+    # GP Appendix-D charge equation, converted from bar{xi},bar{Pi} to
+    # Psi=sqrt(32*pi)*(bar{xi}+i*bar{Pi}) and f_code=2*f_GP.
+    psi2 = psi_re^2 + psi_im^2
+    bracket = -e * f * q * psi2 / (4r^2) -
+              e * Au * (psi_re * psi_re_v + psi_im * psi_im_v) +
+              e * Av * (psi_re * psi_re_u + psi_im * psi_im_u) -
+              psi_re_u * psi_im_v + psi_re_v * psi_im_u
+    return e * bracket / 4
+end
+
 function maxwell_rhs(r, f, q, source::StressEnergyComponents)
     # Gelles-Pretorius use ds^2=-2 f_GP dU dV and
     # F_UV=-Q f_GP/r^2. Since this solver stores f=2 f_GP,
@@ -678,7 +698,10 @@ end
 
 function step_nonlinear_cell!(st::NLState, g::Grid, ep::EvolutionParams, i::Int, j::Int;
                               iterations::Int=5, subtract_rn_background::Bool=false,
-                              reduced_scalar::Bool=false)
+                              reduced_scalar::Bool=false,
+                              hyperbolic_charge::Bool=false)
+    hyperbolic_charge && !reduced_scalar &&
+        throw(ArgumentError("the implemented hyperbolic charge equation requires reduced_scalar=true"))
     du = g.u[i + 1] - g.u[i]
     dv = g.v[j + 1] - g.v[j]
     e = ep.scalar_charge
@@ -733,18 +756,23 @@ function step_nonlinear_cell!(st::NLState, g::Grid, ep::EvolutionParams, i::Int,
             charged_scalar_rhs(r, ru, rv, pru, prv, piu, piv, pr, pii, au, av, e)
         end
         auv, avu, _, quc, qvc = maxwell_rhs(r, f, q, source)
+        quv = reduced_scalar && hyperbolic_charge ?
+              charged_reduced_charge_rhs(r, f, q, pr, pii, pru, prv, piu, piv,
+                                         au, av, e) :
+              zero(q)
 
         r11 = r10 + r01 - r00 + du * dv * ruv - r_defect
         lf11 = lf10 + lf01 - lf00 + du * dv * lfuv - lf_defect
         pr11 = pr10 + pr01 - pr00 + du * dv * pruv
         pi11 = pi10 + pi01 - pi00 + du * dv * piuv
         # Impose the first-order potential equations with centered corner
-        # derivatives. The GP2026 production data prescribe Q on the ingoing
-        # initial leg U=U0, so evolve Q into the domain with its U constraint.
-        # The unused V constraint is an independent consistency check.
+        # derivatives. The GP production route evolves Q hyperbolically, as
+        # in their Appendix D; the constraint-marched route remains available
+        # for direct comparison with earlier local checks.
         au11 = au10 - au01 + au00 + 2dv * auv
         av11 = av01 - av10 + av00 + 2du * avu
-        q11 = q01 + du * quc
+        q11 = hyperbolic_charge ? q10 + q01 - q00 + du * dv * quv :
+              q01 + du * quc
     end
 
     st.r[i + 1, j + 1] = r11

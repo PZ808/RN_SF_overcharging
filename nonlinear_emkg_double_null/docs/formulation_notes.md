@@ -487,10 +487,37 @@ For the finite `Q0=1.02` control at `V approximately 400`,
 `max abs(Q_U-source)=2.92e-11`. The alleged threshold value from the paper
 therefore does not agree with this implementation yet. This discrepancy is
 already present during the transient and is not explained by late-time
-horizon resolution. The next audit must address the coordinate-dependent
-incoming-pulse normalization and/or remaining nonlinear equation convention
-differences before implementing the paper's `Delta U=C/f(Vmax)` production
-refinement or attempting threshold scaling fits.
+horizon resolution.
+
+The next controlled implementation step follows the production evolution
+direction in arXiv:2602.11256. `evolve_gp2026_u_adaptive` stores rows at
+fixed `U`, fills each row across the prescribed `V` mesh, and chooses the
+next row from the completed outer-boundary value:
+
+```text
+Delta U = C/f_GP(U,Vmax) = 2C/f_code(U,Vmax).
+```
+
+It also provides the Appendix-D hyperbolic evolution equation for `Q`,
+converted to `Psi=sqrt(32*pi) r phi_GP` and `f_code=2 f_GP`. The prior
+`Q_U` constraint march remains available as a comparison diagnostic, not as
+the production default. `examples/check_gp2026_u_refinement.jl` runs either
+branch and can promote arithmetic to `BigFloat`.
+
+At `Q0=1.0033218`, `A0=0.01`, `e Q0=0.6`, and `Vmax=100`, the hyperbolic
+charge branch currently gives:
+
+| `Delta V` | `C` | first trapped `V` | `max abs(Q_U-source)` | `max abs(Q_V-source)` |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.080 | 0.600 | 51.36 | 8.64e-5 | 4.74e-6 |
+| 0.040 | 0.300 | 45.88 | 1.13e-5 | 1.08e-6 |
+| 0.020 | 0.150 | 24.80 | 6.76e-6 | 2.16e-7 |
+
+Thus the charge residuals decrease under this joint refinement, but the
+apparent-horizon time has not converged and every listed run eventually
+encounters a nonfinite row. The paper-style marching implementation is useful
+for the next debugging comparison; it is not yet a validated reproduction of
+the nonlinear threshold solution.
 
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time
