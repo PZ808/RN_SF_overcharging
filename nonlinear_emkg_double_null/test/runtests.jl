@@ -209,6 +209,10 @@ end
     transposed = adaptive_state_from_u_rows(evolved)
     @test length(transposed.slices) == length(grid.v)
     @test last(transposed.slices).u == [row.u for row in evolved.rows]
+
+    limited = evolve_gp2026_u_adaptive(initial, ep; Umax=-0.9, C,
+                                       iterations=10, step_control=:max_row)
+    @test last(limited.rows).u ≈ -0.9
 end
 
 @testset "MRT ingoing initial leg normalization" begin
@@ -529,6 +533,7 @@ end
     @test isfinite(src.Tthth)
     @test isfinite(src.Ju)
     @test isfinite(src.Jv)
+    @test isfinite(src.scalar_logf_source)
     @test src.Tuu >= 0
     @test src.Tvv >= 0
 
@@ -537,6 +542,7 @@ end
     @test neutral.Jv == 0
     @test neutral.Tuv ≈ neutral.alpha^2 / 3.0
     @test neutral.alpha ≈ -0.4 * 3.0 / (2 * 2.0^2)
+    @test neutral.scalar_logf_source ≈ (0.3 * -0.1 + 0.05 * 0.2) / 2
 
     auv, avu, _, _, _ = maxwell_rhs(2.0, 3.0, 0.4, neutral)
     @test avu - auv ≈ -0.4 * 3.0 / (2 * 2.0^2)
@@ -560,4 +566,5 @@ end
     @test from_reduced.Tvv ≈ src.Tvv
     @test from_reduced.Ju ≈ src.Ju
     @test from_reduced.Jv ≈ src.Jv
+    @test from_reduced.scalar_logf_source ≈ src.scalar_logf_source
 end

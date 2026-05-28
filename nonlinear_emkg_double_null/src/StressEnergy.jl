@@ -67,6 +67,7 @@ struct StressEnergyComponents{T<:Real}
     Ju::T
     Jv::T
     alpha::T
+    scalar_logf_source::T
 end
 
 function covariant_scalar_derivatives(phi_re, phi_im, phi_re_u, phi_re_v,
@@ -107,8 +108,8 @@ function stress_energy(r, f, q, phi_re, phi_im, phi_re_u, phi_re_v,
     alpha = -q * f / (2r^2)
     maxwell_Tuu = zero(r)
     maxwell_Tvv = zero(r)
-    maxwell_Tuv = alpha^2 / f
-    maxwell_Tthth = 2 * r^2 * alpha^2 / f^2
+    maxwell_Tuv = q^2 * f / (4r^4)
+    maxwell_Tthth = q^2 / (2r^2)
 
     return StressEnergyComponents(
         scalar_weight * scalar_Tuu + maxwell_weight * maxwell_Tuu,
@@ -118,6 +119,7 @@ function stress_energy(r, f, q, phi_re, phi_im, phi_re_u, phi_re_v,
         Ju,
         Jv,
         alpha,
+        scalar_weight * du_dot_dv / 2,
     )
 end
 

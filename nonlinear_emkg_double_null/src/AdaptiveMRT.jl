@@ -661,21 +661,28 @@ Evolve GP2026 initial data with the paper's production `U`-step criterion.
 
 The paper uses `ds^2=-2*f_GP*dU*dV`, while the solver stores
 `f_code=2*f_GP`. Therefore its `Delta U=C/f_GP(U,Vmax)` rule is
-`Delta U=2C/f_code(U,Vmax)` here.
+`Delta U=2C/f_code(U,Vmax)` here. The default `step_control=:outer` uses
+that rule directly; `step_control=:max_row` is a diagnostic limiter that
+uses the largest `f_code` on the completed row when the stiff peak has moved
+away from `Vmax`.
 """
 function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6, C=0.6,
                                   U0=initial.u, V0=first(initial.v), M0=ep.rn.M,
                                   iterations::Int=10, max_rows::Int=100_000,
-                                  hyperbolic_charge::Bool=true)
+                                  hyperbolic_charge::Bool=true,
+                                  step_control::Symbol=:outer)
     C > 0 || throw(ArgumentError("C must be positive"))
     Umax > initial.u || throw(ArgumentError("Umax must exceed initial U"))
     max_rows >= 2 || throw(ArgumentError("max_rows must be at least 2"))
+    step_control in (:outer, :max_row) ||
+        throw(ArgumentError("step_control must be :outer or :max_row"))
     rows = [initial]
     while last(rows).u < Umax && length(rows) < max_rows
         previous = last(rows)
-        fcode_outer = exp(last(previous.logf))
-        isfinite(fcode_outer) && fcode_outer > 0 || break
-        du = 2C / fcode_outer
+        logf_step = step_control === :outer ? last(previous.logf) : maximum(previous.logf)
+        fcode_step = exp(logf_step)
+        isfinite(fcode_step) && fcode_step > 0 || break
+        du = 2C / fcode_step
         next_u = min(Umax, previous.u + du)
         next_u > previous.u || break
         south = gp2026_na_boundary_point(next_u, ep; U0, V0, M0)

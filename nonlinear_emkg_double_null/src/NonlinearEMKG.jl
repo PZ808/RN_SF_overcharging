@@ -600,12 +600,11 @@ end
 function metric_rhs(r, f, ru, rv, q, source::StressEnergyComponents)
     # MRT Eq. (4): (log f)_UV = f/(2r^2) + 2 r_U r_V/r^2
     #                         - Q^2 f/r^4 - (1/2) phi_U phi_V.
-    # `source.Tthth` includes Maxwell angular stress, while the Coulomb term
-    # is already carried explicitly through Q. Remove the stored EM component
-    # before applying the MRT-normalized scalar source.
-    maxwell_tthth = 2 * r^2 * source.alpha^2 / f^2
-    scalar_tthth = source.Tthth - maxwell_tthth
-    scalar_uv_source = scalar_tthth * f / (8r^2)
+    # Use the simplified scalar cross term directly. Computing it through
+    # T_theta theta would require subtracting Maxwell pieces and multiplying
+    # by f, which creates avoidable 0/0 cancellations when f underflows during
+    # failure diagnostics.
+    scalar_uv_source = source.scalar_logf_source
     ruv = (-ru * rv - f * (1 - q^2 / r^2) / 4) / r
     logfuv = f / (2r^2) + 2 * ru * rv / r^2 - q^2 * f / r^4 - scalar_uv_source
     return ruv, logfuv

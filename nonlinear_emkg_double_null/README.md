@@ -25,8 +25,10 @@ computing stress-energy and Maxwell current sources. Conservative charge and
 mass-balance diagnostics are now available. A GP2026 paper-style driver also
 marches complete fixed-`U` rows with `Delta U=C/f_GP(U,Vmax)` and the
 published hyperbolic `Q` equation, with the older constraint march retained
-as a comparison mode. The next important work is controlling its long-run
-constraint residuals before horizon-accumulation validation.
+as a comparison mode. A diagnostic `max-row` step limiter is available because
+the outer-boundary rule can miss an interior large-`f` peak after apparent
+horizon formation. The next important work is controlling the evolving-metric
+long-run behavior before horizon-accumulation validation.
 
 ## Layout
 
@@ -59,5 +61,6 @@ julia --project=. examples/check_gp2026_initial_data.jl
 julia --project=. examples/check_gp2026_short_balance.jl
 julia --project=. examples/check_gp2026_long_evolution.jl
 julia --project=. examples/check_gp2026_u_refinement.jl
+julia --project=. examples/diagnose_gp2026_nonfinite.jl
 julia --project=. -e 'using Pkg; Pkg.test()'
 ```

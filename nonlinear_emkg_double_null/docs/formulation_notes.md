@@ -519,6 +519,20 @@ encounters a nonfinite row. The paper-style marching implementation is useful
 for the next debugging comparison; it is not yet a validated reproduction of
 the nonlinear threshold solution.
 
+`examples/diagnose_gp2026_nonfinite.jl` localizes the first coarse
+`Delta V=0.08`, `C=0.6` nonfinite row. The immediate failure is not a missing
+Maxwell source or a horizon regularity singularity: after the apparent-horizon
+region forms, the largest `f_code` value moves away from `Vmax`, while
+`f_code(U,Vmax)` collapses from about `1.7e4` to `12`. The paper step rule
+then jumps from `Delta U=6.9e-5` to `Delta U=0.10`; at `V approximately 50.4`
+the fixed-point cell update drives `r_11` negative and then overflows on the
+next cell. A diagnostic `step_control=:max_row` option instead uses
+`Delta U=2C/max_row(f_code)` and reaches `U=1.6` without a nonfinite row for
+that same run, confirming that the blow-up is caused by row step control.
+That limiter is not yet a physics result: the apparent-horizon location and
+charge residuals still require a convergence study with a principled local
+time-step/refinement rule.
+
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time
 horizon charge-density exponent is `1 - 2s = 0`, i.e. a plateau. The
