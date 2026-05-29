@@ -489,23 +489,34 @@ therefore does not agree with this implementation yet. This discrepancy is
 already present during the transient and is not explained by late-time
 horizon resolution.
 
-The next controlled implementation step follows the production evolution
-direction in arXiv:2602.11256. `evolve_gp2026_u_adaptive` stores rows at
-fixed `U`, fills each row across the prescribed `V` mesh, and chooses the
-next row from the completed outer-boundary value:
+The next controlled implementation step follows the row-oriented production
+evolution direction in arXiv:2602.11256. `evolve_gp2026_u_adaptive` stores
+rows at fixed `U` and fills each row across the prescribed `V` mesh. The
+literal paper step rule is
 
 ```text
 Delta U = C/f_GP(U,Vmax) = 2C/f_code(U,Vmax).
 ```
 
-It also provides the Appendix-D hyperbolic evolution equation for `Q`,
+The solver keeps that rule available as `step_control=:outer`, but the default
+uses `step_control=:local`, the smaller of `Delta U=2C/max_row(f_code)` and a
+local areal-radius limiter
+
+```text
+|r_U| Delta U <= C |Delta r|.
+```
+
+This follows the stability logic of Gundlach/Baumgarte/Hilditch
+arXiv:1908.05971, whose double-null method notes that there is no causal
+Courant condition in these coordinates but still imposes a geometric step
+bound. It also provides the Appendix-D hyperbolic evolution equation for `Q`,
 converted to `Psi=sqrt(32*pi) r phi_GP` and `f_code=2 f_GP`. The prior
 `Q_U` constraint march remains available as a comparison diagnostic, not as
 the production default. `examples/check_gp2026_u_refinement.jl` runs either
 branch and can promote arithmetic to `BigFloat`.
 
 At `Q0=1.0033218`, `A0=0.01`, `e Q0=0.6`, and `Vmax=100`, the hyperbolic
-charge branch currently gives:
+charge branch with the literal `outer` step control gives:
 
 | `Delta V` | `C` | first trapped `V` | `max abs(Q_U-source)` | `max abs(Q_V-source)` |
 | ---: | ---: | ---: | ---: | ---: |
@@ -529,9 +540,30 @@ the fixed-point cell update drives `r_11` negative and then overflows on the
 next cell. A diagnostic `step_control=:max_row` option instead uses
 `Delta U=2C/max_row(f_code)` and reaches `U=1.6` without a nonfinite row for
 that same run, confirming that the blow-up is caused by row step control.
-That limiter is not yet a physics result: the apparent-horizon location and
-charge residuals still require a convergence study with a principled local
-time-step/refinement rule.
+The stricter `local` controller also avoids the invalid row and gives
+`max abs(Q_U-source)=8.01e-6` at the 1000-row cap for the same coarse run,
+but it does not yet reach `U=1.6`; it stops cleanly near `U=-0.202`. This is
+the current default fix. It is not yet a physics result by itself: the
+apparent-horizon location and charge residuals still require a convergence
+study with local refinement and point removal/insertion near the stiff layer.
+
+To make the near-horizon throat explicit, the row diagnostics now include
+
+```text
+y = r - |Q|,        rho = -log(y/|Q|).
+```
+
+`rho` is a stretched extremal-throat coordinate: large `rho` means the row is
+close to the would-be AdS2/JT region. The optional `step_control=:throat`
+limits row-to-row changes in this coordinate, while the default `:local`
+controller takes the minimum of the largest-`f`, geometric-`r`, and
+throat-`rho` limits. The same diagnostic reports a matching candidate and
+the full band where `rho >= rho_match`; for the coarse `Vmax=100`,
+`Delta V=0.08`, `C=0.6` run at the 1000-row cap, `rho_match=2` gives a band
+from `V=0` to `V=4.88`, with `max rho=2.33`. This is the data needed for a
+future matched full-system plus near-AdS2/JT patch: choose a `rho=rho_match`
+interface, pass `r`, `Q`, `Psi`, and fluxes across it, and evolve the deeper
+throat with effective near-horizon variables.
 
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time

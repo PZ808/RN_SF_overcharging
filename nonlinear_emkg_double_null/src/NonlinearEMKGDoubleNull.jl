@@ -27,7 +27,11 @@ export metric_rhs, maxwell_rhs
 export NLSlice, NLPoint, AdaptiveNLState, PointSplittingConfig, HorizonChoppingConfig
 export HorizonRefinementConfig, slice_point
 export slice_from_rectangular, adaptive_state_from_rectangular, west_boundary_from_rectangular
-export NLRow, UAdaptiveNLState, row_from_rectangular, adaptive_state_from_u_rows
+export NLRow, UAdaptiveNLState, ThroatRowDiagnostics
+export ThroatMatchCandidate, ThroatMatchBand
+export row_from_rectangular, adaptive_state_from_u_rows
+export throat_row_diagnostics, throat_matching_candidate, throat_matching_band
+export throat_row_du, geometric_row_du
 export interpolate_slice, refine_u_grid, refine_slice, truncate_slice
 export refine_slice_constrained
 export spacing_refinement_flags, variation_refinement_flags, point_splitting_flags

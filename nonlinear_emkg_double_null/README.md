@@ -22,13 +22,17 @@ Here `phi_GP` denotes the canonically normalized scalar used in
 arXiv:2602.11256. The GP2026 driver evolves the paper's reduced field
 `r*phi` with `reduced_scalar=true` and converts back to `Phi` only when
 computing stress-energy and Maxwell current sources. Conservative charge and
-mass-balance diagnostics are now available. A GP2026 paper-style driver also
-marches complete fixed-`U` rows with `Delta U=C/f_GP(U,Vmax)` and the
-published hyperbolic `Q` equation, with the older constraint march retained
-as a comparison mode. A diagnostic `max-row` step limiter is available because
-the outer-boundary rule can miss an interior large-`f` peak after apparent
-horizon formation. The next important work is controlling the evolving-metric
-long-run behavior before horizon-accumulation validation.
+mass-balance diagnostics are now available. A GP2026 row driver also marches
+complete fixed-`U` rows with the published hyperbolic `Q` equation, with the
+older constraint march retained as a comparison mode. Its default step
+controller combines the largest `f_code` on the completed row with local
+areal-radius and throat-coordinate limiters in the style of
+Gundlach-Baumgarte-Hilditch arXiv:1908.05971, because the literal
+outer-boundary rule `Delta U=C/f_GP(U,Vmax)` can miss an interior stiff layer
+after apparent-horizon formation. The throat diagnostic uses
+`rho=-log((r-|Q|)/|Q|)` and reports matching bands for a future near-AdS2/JT
+patch. The next important work is adding local mesh management around that
+layer before horizon-accumulation validation.
 
 ## Layout
 

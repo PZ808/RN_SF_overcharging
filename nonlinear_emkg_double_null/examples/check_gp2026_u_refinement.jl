@@ -1,5 +1,7 @@
 using NonlinearEMKGDoubleNull
 
+const N = NonlinearEMKGDoubleNull
+
 function real_argument(index, default, ::Type{T}) where {T<:Real}
     return parse(T, length(ARGS) >= index ? ARGS[index] : default)
 end
@@ -29,10 +31,22 @@ function run_comparison(::Type{T}) where {T<:Real}
     hyperbolic_charge = charge_mode == "hyperbolic"
     charge_mode in ("hyperbolic", "constraint") ||
         throw(ArgumentError("charge mode must be hyperbolic or constraint"))
-    step_control_argument = length(ARGS) >= 10 ? ARGS[10] : "outer"
-    step_control_argument in ("outer", "max-row") ||
-        throw(ArgumentError("step control must be outer or max-row"))
-    step_control = step_control_argument == "outer" ? :outer : :max_row
+    step_control_argument = length(ARGS) >= 10 ? ARGS[10] : "local"
+    step_control_argument in ("outer", "max-row", "geometric", "throat", "local") ||
+        throw(ArgumentError("step control must be outer, max-row, geometric, throat, or local"))
+    step_control = if step_control_argument == "outer"
+        :outer
+    elseif step_control_argument == "max-row"
+        :max_row
+    elseif step_control_argument == "geometric"
+        :geometric
+    elseif step_control_argument == "throat"
+        :throat
+    else
+        :local
+    end
+    max_delta_rho = real_argument(11, "0.25", T)
+    match_rho = real_argument(12, "2.0", T)
 
     U0 = parse(T, "-1.0")
     ep = EvolutionParams(
@@ -48,24 +62,40 @@ function run_comparison(::Type{T}) where {T<:Real}
     initialize_gp2026_single_pulse!(seed, grid, ep)
     initial = row_from_rectangular(seed, grid, 1)
     raw = evolve_gp2026_u_adaptive(initial, ep; Umax, C, iterations=10, max_rows,
-                                   hyperbolic_charge, step_control)
+                                   hyperbolic_charge, step_control, max_delta_rho)
 
-    last_finite = findlast(row -> all(isfinite, row.r) && all(isfinite, row.logf) &&
-                                   all(isfinite, row.phi_re) && all(isfinite, row.phi_im) &&
-                                   all(isfinite, row.Au) && all(isfinite, row.Av) &&
-                                   all(isfinite, row.Q), raw.rows)
-    isnothing(last_finite) && error("initial GP row is nonfinite")
-    finite_rows = UAdaptiveNLState(raw.rows[1:last_finite])
-    state = adaptive_state_from_u_rows(finite_rows)
-    du = diff([row.u for row in finite_rows.rows])
-    trap = length(finite_rows.rows) >= 2 ? first_trapped_slice(state) : nothing
-    last_fcode = exp(last(finite_rows.rows).logf[end])
+    last_valid = findlast(row -> all(isfinite, row.r) && all(isfinite, row.logf) &&
+                                  all(isfinite, row.phi_re) && all(isfinite, row.phi_im) &&
+                                  all(isfinite, row.Au) && all(isfinite, row.Av) &&
+                                  all(isfinite, row.Q) &&
+                                  all(>(zero(eltype(row.r))), row.r), raw.rows)
+    isnothing(last_valid) && error("initial GP row is invalid")
+    valid_rows = UAdaptiveNLState(raw.rows[1:last_valid])
+    final_row = last(valid_rows.rows)
+    state = adaptive_state_from_u_rows(valid_rows)
+    du = diff([row.u for row in valid_rows.rows])
+    trap = length(valid_rows.rows) >= 2 ? first_trapped_slice(state) : nothing
+    last_fcode = exp(last(final_row.logf))
+    max_fcode = exp(maximum(final_row.logf))
     next_paper_du = 2C / last_fcode
-    hit_nonfinite_row = last_finite < length(raw.rows)
-    coordinate_stalled = last(finite_rows.rows).u + next_paper_du ==
-                         last(finite_rows.rows).u
+    next_max_row_du = 2C / max_fcode
+    next_geometric_du = N.geometric_row_du(valid_rows.rows, C)
+    next_throat_du = throat_row_du(valid_rows.rows, C; max_delta_rho)
+    next_controlled_du = if step_control === :outer
+        next_paper_du
+    elseif step_control === :max_row
+        next_max_row_du
+    elseif step_control === :geometric
+        next_geometric_du
+    elseif step_control === :throat
+        next_throat_du
+    else
+        minimum((next_max_row_du, next_geometric_du, next_throat_du))
+    end
+    hit_invalid_row = last_valid < length(raw.rows)
+    coordinate_stalled = final_row.u + next_controlled_du == final_row.u
 
-    println("Gelles-Pretorius 2026 paper U-step evolution")
+    println("Gelles-Pretorius 2026 U-step evolution")
     println("numeric type = ", T)
     println("precision bits = ", precision(T))
     println("Q0 = ", q0)
@@ -74,23 +104,37 @@ function run_comparison(::Type{T}) where {T<:Real}
     println("requested Vmax = ", vmax)
     println("Delta V = ", dv)
     println("C = ", C)
+    println("max Delta rho = ", max_delta_rho)
+    println("matching rho = ", match_rho)
     println("charge evolution = ", charge_mode)
     println("step control = ", step_control_argument)
     println("requested Umax = ", Umax)
     println("stored U rows = ", length(raw.rows))
-    println("finite U rows = ", length(finite_rows.rows))
-    println("last finite U = ", last(finite_rows.rows).u)
-    println("reached Umax = ", last(finite_rows.rows).u == Umax)
-    println("encountered nonfinite row = ", hit_nonfinite_row)
+    println("valid U rows = ", length(valid_rows.rows))
+    println("last valid U = ", final_row.u)
+    println("reached Umax = ", final_row.u == Umax)
+    println("encountered invalid row = ", hit_invalid_row)
     println("coordinate stalled at precision = ", coordinate_stalled)
     println("Delta U extrema = ", isempty(du) ? nothing : extrema(du))
     println("last outer f_code = ", last_fcode)
+    println("last max-row f_code = ", max_fcode)
     println("next paper Delta U = ", next_paper_du)
+    println("next max-row Delta U = ", next_max_row_du)
+    println("next geometric Delta U = ", next_geometric_du)
+    println("next throat Delta U = ", next_throat_du)
+    println("next controlled Delta U = ", next_controlled_du)
     println("first trapped (V,U-cell) = ", trap)
+    throat = throat_row_diagnostics(final_row)
+    println("throat min(r-|Q|) = ", throat.min_y)
+    println("throat max rho = ", throat.max_rho)
+    println("throat max |Delta rho| = ", throat.max_abs_delta_rho)
+    match = throat_matching_candidate(final_row; rho_min=match_rho)
+    println("throat matching candidate = ", match)
+    println("throat matching band = ", throat_matching_band(final_row; rho_min=match_rho))
 
-    if length(finite_rows.rows) >= 3
+    if length(valid_rows.rows) >= 3
         target_v = vmax - dv / 2
-        target_u = min(parse(T, "-0.5"), last(finite_rows.rows).u)
+        target_u = min(parse(T, "-0.5"), final_row.u)
         _, _, _, _, q_u_residual =
             charged_charge_flux_u_profile(state, ep; target_v, reduced_scalar=true)
         _, _, _, _, q_v_residual =

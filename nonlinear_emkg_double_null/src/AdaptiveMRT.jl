@@ -46,6 +46,36 @@ struct UAdaptiveNLState{T<:Real}
     rows::Vector{NLRow{T}}
 end
 
+struct ThroatRowDiagnostics{T<:Real}
+    y::Vector{T}
+    rho::Vector{T}
+    qabs::Vector{T}
+    min_y::T
+    max_rho::T
+    max_abs_delta_rho::T
+end
+
+struct ThroatMatchCandidate{T<:Real}
+    index::Int
+    u::T
+    v::T
+    r::T
+    q::T
+    y::T
+    rho::T
+end
+
+struct ThroatMatchBand{T<:Real}
+    first_index::Int
+    last_index::Int
+    count::Int
+    u::T
+    v_first::T
+    v_last::T
+    rho_minimum_in_band::T
+    rho_maximum_in_band::T
+end
+
 struct NLPoint{T<:Real}
     u::T
     v::T
@@ -251,6 +281,62 @@ function adaptive_state_from_u_rows(st::UAdaptiveNLState)
                 [row.Av[j] for row in rows], [row.Q[j] for row in rows])
         for j in eachindex(reference_v)
     ])
+end
+
+function throat_row_diagnostics(row::NLRow; charge_floor=nothing,
+                                throat_floor=nothing)
+    T = promote_type(eltype(row.r), eltype(row.Q))
+    qfloor = isnothing(charge_floor) ? sqrt(eps(float(one(T)))) :
+             convert(T, charge_floor)
+    yfloor = isnothing(throat_floor) ? sqrt(eps(float(one(T)))) :
+             convert(T, throat_floor)
+    qabs = [max(abs(q), qfloor) for q in row.Q]
+    y = [max(row.r[j] - qabs[j], yfloor * qabs[j]) for j in eachindex(row.r)]
+    rho = [-log(y[j] / qabs[j]) for j in eachindex(y)]
+    max_abs_delta_rho = length(rho) <= 1 ? zero(eltype(rho)) : maximum(abs, diff(rho))
+    return ThroatRowDiagnostics(y, rho, qabs, minimum(y), maximum(rho),
+                                max_abs_delta_rho)
+end
+
+function throat_matching_candidate(row::NLRow; rho_min=2.0, charge_floor=nothing,
+                                   throat_floor=nothing)
+    diagnostics = throat_row_diagnostics(row; charge_floor, throat_floor)
+    index = findfirst(rho -> rho >= rho_min, diagnostics.rho)
+    isnothing(index) && return nothing
+    return ThroatMatchCandidate(index, row.u, row.v[index], row.r[index],
+                                row.Q[index], diagnostics.y[index],
+                                diagnostics.rho[index])
+end
+
+function throat_matching_band(row::NLRow; rho_min=2.0, charge_floor=nothing,
+                              throat_floor=nothing)
+    diagnostics = throat_row_diagnostics(row; charge_floor, throat_floor)
+    indices = findall(rho -> rho >= rho_min, diagnostics.rho)
+    isempty(indices) && return nothing
+    first_index = first(indices)
+    last_index = last(indices)
+    band_rho = diagnostics.rho[indices]
+    return ThroatMatchBand(first_index, last_index, length(indices), row.u,
+                           row.v[first_index], row.v[last_index],
+                           minimum(band_rho), maximum(band_rho))
+end
+
+function throat_row_du(rows::AbstractVector{<:NLRow}, C::Real; max_delta_rho=0.25)
+    T = promote_type(typeof(C), typeof(first(rows).u), typeof(max_delta_rho))
+    length(rows) >= 2 || return T(Inf)
+    current = rows[end]
+    previous = rows[end - 1]
+    current.v == previous.v ||
+        throw(ArgumentError("throat step requires matching V grids"))
+    du_previous = current.u - previous.u
+    du_previous > 0 || throw(ArgumentError("row U coordinates must increase"))
+    current_rho = throat_row_diagnostics(current).rho
+    previous_rho = throat_row_diagnostics(previous).rho
+    rho_u = [(current_rho[j] - previous_rho[j]) / du_previous
+             for j in eachindex(current_rho)]
+    max_speed = maximum(abs, rho_u)
+    isfinite(max_speed) && max_speed > 0 || return T(Inf)
+    return convert(T, max_delta_rho) / max_speed
 end
 
 function west_boundary_from_rectangular(st::NLState, g::Grid)
@@ -656,33 +742,71 @@ function advance_u_row(previous::NLRow, south::NLPoint, ep::EvolutionParams;
     return row_from_rectangular(st, grid, 2)
 end
 
+function geometric_row_du(rows::AbstractVector{<:NLRow}, C::Real)
+    T = promote_type(typeof(C), typeof(first(rows).u))
+    length(rows) >= 2 || return T(Inf)
+    current = rows[end]
+    previous = rows[end - 1]
+    current.v == previous.v ||
+        throw(ArgumentError("geometric step requires matching V grids"))
+    du_previous = current.u - previous.u
+    du_previous > 0 || throw(ArgumentError("row U coordinates must increase"))
+    ru = [(current.r[j] - previous.r[j]) / du_previous for j in eachindex(current.r)]
+    candidates = promote_type(eltype(current.r), typeof(C), typeof(du_previous))[]
+    for j in 1:length(current.r)-1
+        dR = abs(current.r[j + 1] - current.r[j])
+        speed = (abs(ru[j]) + abs(ru[j + 1])) / 2
+        if isfinite(dR) && isfinite(speed) && dR > 0 && speed > 0
+            push!(candidates, C * dR / speed)
+        end
+    end
+    isempty(candidates) && return T(Inf)
+    return minimum(candidates)
+end
+
 """
-Evolve GP2026 initial data with the paper's production `U`-step criterion.
+Evolve GP2026 initial data with a row-wise `U` step criterion.
 
 The paper uses `ds^2=-2*f_GP*dU*dV`, while the solver stores
 `f_code=2*f_GP`. Therefore its `Delta U=C/f_GP(U,Vmax)` rule is
-`Delta U=2C/f_code(U,Vmax)` here. The default `step_control=:outer` uses
-that rule directly; `step_control=:max_row` is a diagnostic limiter that
-uses the largest `f_code` on the completed row when the stiff peak has moved
-away from `Vmax`.
+`Delta U=2C/f_code(U,Vmax)` here. In practice the stiff `f_code` peak can
+move away from `Vmax` after apparent-horizon formation, so the default
+`step_control=:local` takes the smaller of the largest-`f_code` limiter and
+the local geometric condition `|r_U| Delta U <= C |Delta r|`, following the
+spirit of Gundlach/Baumgarte/Hilditch arXiv:1908.05971. The literal paper
+rule remains available as `step_control=:outer`; `step_control=:max_row`
+uses only the largest-`f_code` limiter.
 """
 function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6, C=0.6,
                                   U0=initial.u, V0=first(initial.v), M0=ep.rn.M,
                                   iterations::Int=10, max_rows::Int=100_000,
                                   hyperbolic_charge::Bool=true,
-                                  step_control::Symbol=:outer)
+                                  step_control::Symbol=:local,
+                                  max_delta_rho=0.25)
     C > 0 || throw(ArgumentError("C must be positive"))
     Umax > initial.u || throw(ArgumentError("Umax must exceed initial U"))
     max_rows >= 2 || throw(ArgumentError("max_rows must be at least 2"))
-    step_control in (:outer, :max_row) ||
-        throw(ArgumentError("step_control must be :outer or :max_row"))
+    step_control in (:outer, :max_row, :geometric, :throat, :local) ||
+        throw(ArgumentError("step_control must be :outer, :max_row, :geometric, :throat, or :local"))
     rows = [initial]
     while last(rows).u < Umax && length(rows) < max_rows
         previous = last(rows)
-        logf_step = step_control === :outer ? last(previous.logf) : maximum(previous.logf)
-        fcode_step = exp(logf_step)
-        isfinite(fcode_step) && fcode_step > 0 || break
-        du = 2C / fcode_step
+        outer_du = 2C / exp(last(previous.logf))
+        max_row_du = 2C / exp(maximum(previous.logf))
+        geometric_du = geometric_row_du(rows, C)
+        throat_du = throat_row_du(rows, C; max_delta_rho)
+        du = if step_control === :outer
+            outer_du
+        elseif step_control === :max_row
+            max_row_du
+        elseif step_control === :geometric
+            isfinite(geometric_du) ? geometric_du : max_row_du
+        elseif step_control === :throat
+            isfinite(throat_du) ? throat_du : max_row_du
+        else
+            minimum((max_row_du, geometric_du, throat_du))
+        end
+        isfinite(du) && du > 0 || break
         next_u = min(Umax, previous.u + du)
         next_u > previous.u || break
         south = gp2026_na_boundary_point(next_u, ep; U0, V0, M0)
@@ -692,7 +816,7 @@ function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6,
         all(isfinite, next.r) && all(isfinite, next.logf) &&
             all(isfinite, next.phi_re) && all(isfinite, next.phi_im) &&
             all(isfinite, next.Au) && all(isfinite, next.Av) &&
-            all(isfinite, next.Q) ||
+            all(isfinite, next.Q) && all(>(zero(eltype(next.r))), next.r) ||
             break
     end
     return UAdaptiveNLState(rows)
