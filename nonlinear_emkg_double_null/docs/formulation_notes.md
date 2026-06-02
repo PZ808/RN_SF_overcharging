@@ -460,6 +460,33 @@ under each halving of `Delta V`. The short production evolution in
 | 0.080 | 8.86e-7 | 1.68e-6 | 1.49e-7 |
 | 0.040 | 4.41e-7 | 4.47e-7 | 7.51e-8 |
 
+`examples/convergence_gp2026_charge_residuals.jl` now performs a cleaner
+two-dimensional convergence study by halving both `Delta U` and `Delta V` on
+the fixed short domain `U in [-1,-0.8]`, `V in [0,20]`. With the GP2026
+production hyperbolic charge update, sampled at `U=-0.9` and `V approximately
+10`, the charge residuals converge at second order:
+
+| `Delta U` | `Delta V` | `max abs(Q_U-source)` | rate | `max abs(Q_V-source)` | rate | `max abs(Q-Q_flux)` | rate |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.01000 | 0.080 | 1.089e-6 | - | 1.651e-6 | - | 1.830e-7 | - |
+| 0.00500 | 0.040 | 2.757e-7 | 1.98 | 4.128e-7 | 2.00 | 4.723e-8 | 1.95 |
+| 0.00250 | 0.020 | 6.936e-8 | 1.99 | 1.032e-7 | 2.00 | 1.199e-8 | 1.98 |
+| 0.00125 | 0.010 | 1.740e-8 | 2.00 | 2.580e-8 | 2.00 | 3.021e-9 | 1.99 |
+
+The row-marched production path shows the same behavior on the same short
+domain when the paper-AMR constant `C` is halved with `Delta V`:
+
+| `Delta V` | `C` | U rows | `max abs(Q_U-source)` | rate | `max abs(Q_V-source)` | rate |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.080 | 0.100 | 8 | 2.420e-6 | - | 1.655e-6 | - |
+| 0.040 | 0.050 | 15 | 6.210e-7 | 1.96 | 4.138e-7 | 2.00 |
+| 0.020 | 0.025 | 29 | 1.572e-7 | 1.98 | 1.035e-7 | 2.00 |
+
+These tests check the Maxwell sector in a region that reaches the same
+physical endpoint at every resolution. They do not by themselves validate the
+near-horizon critical scaling, where the Eq. (9) grid accumulation changes the
+meaning of a fixed `Umax` comparison.
+
 Re-running these checks after converting the GP2026 evolution path from
 `Phi` to the published reduced field `Psi=r*Phi` leaves the quoted short
 balance residuals and the long-run transition below unchanged at the reported
@@ -547,6 +574,56 @@ the current default fix. It is not yet a physics result by itself: the
 apparent-horizon location and charge residuals still require a convergence
 study with local refinement and point removal/insertion near the stiff layer.
 
+This failure mode is sensitive to the outer boundary. The paper's production
+domain uses `Vmax=400`, not the shorter `Vmax=100` stress test above. With
+`Vmax=400`, `Delta V=0.08`, `C=0.6`, and the literal Eq. (9) rule, the outer
+boundary metric grows monotonically in the expected way and the coordinate
+spacing collapses instead of producing an invalid row over the first 120 rows:
+
+| row | `U` | `Delta U` | `f_code(U,Vmax)` |
+| ---: | ---: | ---: | ---: |
+| 2 | -0.869658 | 1.30e-1 | 9.21e0 |
+| 41 | -0.206532 | 2.14e-4 | 5.60e3 |
+| 81 | -0.205396 | 1.49e-7 | 8.07e6 |
+| 111 | -0.205395 | 3.59e-10 | 3.34e9 |
+
+The correct paper-reproduction interpretation is therefore not "does the
+coordinate reach `U=1.6`?" in a horizon-forming run. Eq. (9) is intended to
+accumulate rows near the event-horizon/throat location. The diagnostic
+`examples/check_gp2026_paper_amr.jl` records this limiting-`U` behavior
+directly and should be used alongside the shorter stress tests.
+
+For the critical-phenomena comparison in Sec. IIIA, the direct observables are
+not the limiting `U` itself but the trapped-surface formation time and late
+horizon geometry:
+
+```text
+V_trap proportional to (Q_* - Q0)^(-1/2),
+1 - Q/M proportional to (Q_* - Q0),
+1 - r/M proportional to (Q_* - Q0)^(1/2).
+```
+
+`examples/scan_gp2026_threshold.jl` now scans the paper's one-parameter
+family and prints both the direct Sec. IIIA columns (`slice_trap_*`,
+`final_AH_*`) and the limiting-surface proxy columns (`last_U`, `next_du`,
+`outer_f`, `min_rv`, `max_rho`). A first 120-row `Vmax=400` scan gives a
+smooth proxy trend on the BH side,
+
+| `Q0` | `last_U` | `min r_V` on final row | `max rho` | direct `V_trap` |
+| ---: | ---: | ---: | ---: | :--- |
+| 1.0000000 | -0.250919 | 8.87e-4 | 2.08 | missing |
+| 1.0020000 | -0.224237 | 9.04e-4 | 2.21 | missing |
+| 1.0030000 | -0.210081 | 9.13e-4 | 2.29 | missing |
+| 1.0033218 | -0.205395 | 9.16e-4 | 2.31 | missing |
+
+This is suggestive of the expected limiting surface as `Q0` approaches the
+quoted `Q_*`, but it is not yet a measurement of the Sec. IIIA power laws.
+The current horizon/trapped-surface extraction does not see trapped cells in
+these paper-AMR rows before Eq. (9) has accumulated at the marginal surface.
+The next debugging target is therefore the trapped-region detector and/or the
+ability to continue through the accumulated event-horizon layer, not another
+claim of critical scaling.
+
 To make the near-horizon throat explicit, the row diagnostics now include
 
 ```text
@@ -564,6 +641,24 @@ from `V=0` to `V=4.88`, with `max rho=2.33`. This is the data needed for a
 future matched full-system plus near-AdS2/JT patch: choose a `rho=rho_match`
 interface, pass `r`, `Q`, `Psi`, and fluxes across it, and evolve the deeper
 throat with effective near-horizon variables.
+
+A first check of the lapse in `rho` coordinates compares `log f` with
+
+```text
+log f_(U rho) = log f_(U V) - log |rho_V|.
+```
+
+This is only a coordinate diagnostic on the existing `V` grid. For the
+default local-controller run at the 1000-row cap, the throat band
+`rho >= 2` already has a small raw `log f` range, about `0.42`; the
+`U-rho` coefficient has range about `0.59`. For the failing literal
+outer-step run, the last valid row has a throat-band raw `log f` range of
+about `8.54`, reduced only modestly to `7.62` by the `rho` transform, while
+the full-row transformed range is worse. The important signal is instead
+`max |Delta rho| approximately 11.5` on that last valid outer-step row:
+the violent behavior is an unresolved throat-coordinate gradient. A simple
+post-processing coordinate change does not tame it; a real `rho`-adapted mesh
+or matched near-horizon patch is needed.
 
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time

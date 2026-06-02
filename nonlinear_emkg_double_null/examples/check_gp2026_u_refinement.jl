@@ -131,6 +131,15 @@ function run_comparison(::Type{T}) where {T<:Real}
     match = throat_matching_candidate(final_row; rho_min=match_rho)
     println("throat matching candidate = ", match)
     println("throat matching band = ", throat_matching_band(final_row; rho_min=match_rho))
+    rho_lapse = rho_lapse_diagnostics(final_row; rho_min=match_rho)
+    println("logf range = ", rho_lapse.logf_range)
+    println("logf_rho range = ", rho_lapse.logf_rho_range)
+    println("logf range width = ", range_width(rho_lapse.logf_range))
+    println("logf_rho range width = ", range_width(rho_lapse.logf_rho_range))
+    println("throat logf range = ", rho_lapse.throat_logf_range)
+    println("throat logf_rho range = ", rho_lapse.throat_logf_rho_range)
+    println("throat logf range width = ", range_width(rho_lapse.throat_logf_range))
+    println("throat logf_rho range width = ", range_width(rho_lapse.throat_logf_rho_range))
 
     if length(valid_rows.rows) >= 3
         target_v = vmax - dv / 2

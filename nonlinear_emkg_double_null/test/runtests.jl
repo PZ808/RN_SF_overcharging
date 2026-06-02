@@ -234,6 +234,16 @@ end
     @test band.first_index == first(rho_indices)
     @test band.last_index == last(rho_indices)
     @test band.count == length(rho_indices)
+    @test band.component_count >= 1
+    lapse = rho_lapse_diagnostics(last(evolved.rows); rho_min=0.0)
+    @test length(lapse.rho) == length(last(evolved.rows).v)
+    @test length(lapse.rho_v) == length(last(evolved.rows).v)
+    @test length(lapse.logf_rho) == length(last(evolved.rows).v)
+    @test all(isfinite, lapse.logf_range)
+    @test all(isfinite, lapse.logf_rho_range)
+    @test lapse.throat_count == length(rho_indices)
+    @test range_width(lapse.logf_range) >= 0
+    @test range_width(lapse.logf_rho_range) >= 0
 
     throat_step = evolve_gp2026_u_adaptive(initial, ep; Umax=-0.9, C,
                                            iterations=10, step_control=:throat)

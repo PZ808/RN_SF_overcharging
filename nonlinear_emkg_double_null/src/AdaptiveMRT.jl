@@ -69,11 +69,23 @@ struct ThroatMatchBand{T<:Real}
     first_index::Int
     last_index::Int
     count::Int
+    component_count::Int
     u::T
     v_first::T
     v_last::T
     rho_minimum_in_band::T
     rho_maximum_in_band::T
+end
+
+struct RhoLapseDiagnostics{T<:Real}
+    rho::Vector{T}
+    rho_v::Vector{T}
+    logf_rho::Vector{T}
+    logf_range::Tuple{T,T}
+    logf_rho_range::Tuple{T,T}
+    throat_logf_range::Tuple{T,T}
+    throat_logf_rho_range::Tuple{T,T}
+    throat_count::Int
 end
 
 struct NLPoint{T<:Real}
@@ -313,12 +325,69 @@ function throat_matching_band(row::NLRow; rho_min=2.0, charge_floor=nothing,
     diagnostics = throat_row_diagnostics(row; charge_floor, throat_floor)
     indices = findall(rho -> rho >= rho_min, diagnostics.rho)
     isempty(indices) && return nothing
+    component_count = one(Int)
+    for k in firstindex(indices)+1:lastindex(indices)
+        component_count += indices[k] == indices[k - 1] + 1 ? 0 : 1
+    end
     first_index = first(indices)
     last_index = last(indices)
     band_rho = diagnostics.rho[indices]
-    return ThroatMatchBand(first_index, last_index, length(indices), row.u,
+    return ThroatMatchBand(first_index, last_index, length(indices),
+                           component_count, row.u,
                            row.v[first_index], row.v[last_index],
                            minimum(band_rho), maximum(band_rho))
+end
+
+function finite_extrema(values::AbstractVector{T}) where {T<:Real}
+    finite = [value for value in values if isfinite(value)]
+    isempty(finite) && return (T(NaN), T(NaN))
+    return extrema(finite)
+end
+
+range_width(range::Tuple{<:Real,<:Real}) = range[2] - range[1]
+
+function coordinate_derivative(values::AbstractVector{T},
+                               coordinates::AbstractVector{T}) where {T<:Real}
+    length(values) == length(coordinates) ||
+        throw(ArgumentError("derivative arrays must have equal length"))
+    length(values) >= 2 || throw(ArgumentError("at least two points are required"))
+    derivative = similar(values)
+    derivative[begin] = (values[begin + 1] - values[begin]) /
+                        (coordinates[begin + 1] - coordinates[begin])
+    derivative[end] = (values[end] - values[end - 1]) /
+                      (coordinates[end] - coordinates[end - 1])
+    for j in firstindex(values)+1:lastindex(values)-1
+        derivative[j] = (values[j + 1] - values[j - 1]) /
+                        (coordinates[j + 1] - coordinates[j - 1])
+    end
+    return derivative
+end
+
+function rho_lapse_diagnostics(row::NLRow; rho_min=2.0, charge_floor=nothing,
+                               throat_floor=nothing)
+    throat = throat_row_diagnostics(row; charge_floor, throat_floor)
+    rho_v = coordinate_derivative(throat.rho, row.v)
+    logf_rho = [isfinite(rho_v[j]) && rho_v[j] != 0 ?
+                row.logf[j] - log(abs(rho_v[j])) :
+                typeof(row.logf[j])(Inf)
+                for j in eachindex(row.logf)]
+    throat_indices = findall(rho -> rho >= rho_min, throat.rho)
+    throat_logf_range = isempty(throat_indices) ?
+                         finite_extrema(eltype(row.logf)[]) :
+                         finite_extrema(row.logf[throat_indices])
+    throat_logf_rho_range = isempty(throat_indices) ?
+                             finite_extrema(eltype(logf_rho)[]) :
+                             finite_extrema(logf_rho[throat_indices])
+    return RhoLapseDiagnostics(
+        throat.rho,
+        rho_v,
+        logf_rho,
+        finite_extrema(row.logf),
+        finite_extrema(logf_rho),
+        throat_logf_range,
+        throat_logf_rho_range,
+        length(throat_indices),
+    )
 end
 
 function throat_row_du(rows::AbstractVector{<:NLRow}, C::Real; max_delta_rho=0.25)
