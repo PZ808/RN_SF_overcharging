@@ -663,6 +663,25 @@ with the outer matching surface moving from `V approximately 0.20` to
 interface data stream for comparing the full nonlinear dynamics to a near-AdS2
 or resonant-QNM reduced model.
 
+`examples/convergence_gp2026_throat_boundary.jl` checks this extractor under
+joint paper-AMR refinement. At `rho_match=2`, `Vmax=400`, and
+`(Delta V,C,max_rows)=(0.08,0.6,80),(0.04,0.3,160),(0.02,0.15,320)`, the
+fixed-`rho` local `Q_V` residual decreases as
+
+| `Delta V` | `C` | samples | `max abs(Q_V residual)` |
+| ---: | ---: | ---: | ---: |
+| 0.080 | 0.600 | 65 | 1.884e-6 |
+| 0.040 | 0.300 | 129 | 5.531e-7 |
+| 0.020 | 0.150 | 258 | 1.434e-7 |
+
+The residual rates are approximately `1.77` and `1.95`. Comparing the
+extracted boundary fields as functions of `U`, with the finer run
+interpolated onto the coarser samples, gives rates about `1.86` for
+`V(rho_match)`, `1.55` for `r` and `Q`, and `2.01` for `|r phi_GP|` between
+the last two refinement pairs. The derivative columns in the extractor now use
+centered row derivatives interpolated to the fixed-`rho` crossing; raw
+single-cell secants made the local residual look only first-order.
+
 A first check of the lapse in `rho` coordinates compares `log f` with
 
 ```text

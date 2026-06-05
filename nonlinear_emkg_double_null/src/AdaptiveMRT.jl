@@ -458,6 +458,13 @@ function throat_boundary_sample(row::NLRow; rho_match=2.0, boundary::Symbol=:out
            last(crossings)
     dv = row.v[j + 1] - row.v[j]
     dv > 0 || throw(ArgumentError("row V coordinates must increase"))
+    rho_v = coordinate_derivative(throat.rho, row.v)
+    r_v = coordinate_derivative(row.r, row.v)
+    q_v = coordinate_derivative(row.Q, row.v)
+    phi_re_v = coordinate_derivative(row.phi_re, row.v)
+    phi_im_v = coordinate_derivative(row.phi_im, row.v)
+    Au_v = coordinate_derivative(row.Au, row.v)
+    Av_v = coordinate_derivative(row.Av, row.v)
     T = promote_type(typeof(row.u), eltype(row.v), eltype(row.r),
                      eltype(row.Q), typeof(rho_match))
     return ThroatBoundarySample{T}(
@@ -474,13 +481,13 @@ function throat_boundary_sample(row::NLRow; rho_match=2.0, boundary::Symbol=:out
         segment_value(row.phi_im, j, t),
         segment_value(row.Au, j, t),
         segment_value(row.Av, j, t),
-        segment_slope(throat.rho, row.v, j),
-        segment_slope(row.r, row.v, j),
-        segment_slope(row.Q, row.v, j),
-        segment_slope(row.phi_re, row.v, j),
-        segment_slope(row.phi_im, row.v, j),
-        segment_slope(row.Au, row.v, j),
-        segment_slope(row.Av, row.v, j),
+        segment_value(rho_v, j, t),
+        segment_value(r_v, j, t),
+        segment_value(q_v, j, t),
+        segment_value(phi_re_v, j, t),
+        segment_value(phi_im_v, j, t),
+        segment_value(Au_v, j, t),
+        segment_value(Av_v, j, t),
     )
 end
 
