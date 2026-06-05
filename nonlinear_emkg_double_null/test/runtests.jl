@@ -418,6 +418,33 @@ end
           [false, true, true, true, false]
     @test length(refine_near_apparent_horizon(previous, current, horizon_refinement).u) == 9
 
+    row_v = [0.0, 0.5, 1.0]
+    row_r = [2.0, 2.25, 2.0]
+    row = NLRow(-0.5, row_v, row_r, zeros(3), zeros(3), zeros(3),
+                zeros(3), zeros(3), ones(3))
+    @test row_outgoing_expansion(row) ≈ [0.5, 0.0, -0.5]
+    minimum_sample = row_expansion_minimum(row; row_index=7)
+    @test minimum_sample.row_index == 7
+    @test minimum_sample.v ≈ 1.0
+    @test minimum_sample.rv ≈ -0.5
+    crossing = row_apparent_horizon_crossing(row; row_index=7)
+    @test crossing.row_index == 7
+    @test crossing.u ≈ -0.5
+    @test crossing.v ≈ 0.5
+    @test crossing.rv ≈ 0.0
+    diagnostic = vtrap_diagnostic([row]; missing_status=:max_rows)
+    @test diagnostic.status == :trapped
+    @test diagnostic.trapped
+    @test diagnostic.trap.v ≈ 0.5
+
+    untrapped_row = NLRow(-0.4, row_v, [2.0, 2.2, 2.5], zeros(3), zeros(3),
+                          zeros(3), zeros(3), zeros(3), ones(3))
+    untrapped = vtrap_diagnostic([untrapped_row]; missing_status=:precision_stalled)
+    @test untrapped.status == :precision_stalled
+    @test !untrapped.trapped
+    @test isnothing(untrapped.trap)
+    @test untrapped.closest.rv > 0
+
     cubic_u = [-2.0, -1.0, 0.0, 1.0]
     cubic = cubic_u .^ 3
     cubic_slice = NLSlice(0.0, cubic_u, cubic, cubic, cubic, cubic, cubic, cubic,

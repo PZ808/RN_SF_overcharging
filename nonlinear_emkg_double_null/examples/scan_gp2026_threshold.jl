@@ -33,33 +33,12 @@ function linear_interpolate(x, y, xq)
     return (1 - t) * y[i] + t * y[i + 1]
 end
 
-function row_rv_profile(row::NLRow)
-    n = length(row.v)
-    rv = similar(row.r)
-    rv[begin] = (row.r[begin + 1] - row.r[begin]) /
-                (row.v[begin + 1] - row.v[begin])
-    rv[end] = (row.r[end] - row.r[end - 1]) /
-              (row.v[end] - row.v[end - 1])
-    for j in firstindex(row.v)+1:lastindex(row.v)-1
-        rv[j] = (row.r[j + 1] - row.r[j - 1]) /
-                (row.v[j + 1] - row.v[j - 1])
-    end
-    return rv
-end
-
-function final_row_expansion_minimum(row::NLRow)
-    rv = row_rv_profile(row)
-    value, index = findmin(rv)
-    return (value=value, V=row.v[index], r=row.r[index], Q=row.Q[index])
-end
-
 function first_row_trapped(rows)
-    for row in rows
-        rv = row_rv_profile(row)
-        index = findfirst(<=(zero(eltype(rv))), rv)
-        if !isnothing(index)
-            return (U=row.u, V=row.v[index], r=row.r[index],
-                    Q=row.Q[index], rv=rv[index])
+    for (row_index, row) in pairs(rows)
+        crossing = row_apparent_horizon_crossing(row; row_index)
+        if !isnothing(crossing)
+            return (U=crossing.u, V=crossing.v, r=crossing.r,
+                    Q=crossing.q, rv=crossing.rv)
         end
     end
     return nothing
@@ -120,7 +99,14 @@ function run_case(q0, qstar, vmax, dv, amplitude, C, Umax, max_rows)
     du = diff([row.u for row in rows])
     outer_f = exp(last(final.logf))
     next_du = 2C / outer_f
-    final_min_rv = final_row_expansion_minimum(final)
+    stalled = final.u + next_du == final.u
+    termination_status = last_valid < length(evolved.rows) ? :invalid_row :
+                         final.u == Umax ? :reached_umax :
+                         stalled ? :precision_stalled :
+                         length(evolved.rows) >= max_rows ? :max_rows :
+                         :stopped
+    final_min_rv = row_expansion_minimum(final; row_index=length(rows))
+    vtrap_info = vtrap_diagnostic(rows; missing_status=termination_status)
     throat = throat_row_diagnostics(final)
     row_trap = first_row_trapped(rows)
 
@@ -129,7 +115,8 @@ function run_case(q0, qstar, vmax, dv, amplitude, C, Umax, max_rows)
     horizon = final_horizon_properties(state)
 
     dq = qstar - q0
-    vtrap = isnothing(slice_trap) ? nothing : slice_trap.V
+    direct_vtrap = vtrap_info.trap
+    vtrap = isnothing(direct_vtrap) ? nothing : direct_vtrap.v
     scaled_vtrap = !isnothing(vtrap) && dq > 0 ? vtrap * sqrt(dq) : nothing
 
     return (
@@ -141,17 +128,27 @@ function run_case(q0, qstar, vmax, dv, amplitude, C, Umax, max_rows)
         invalid_row=last_valid < length(evolved.rows),
         last_U=final.u,
         reached_Umax=final.u == Umax,
-        stalled=final.u + next_du == final.u,
+        stalled=stalled,
         first_du=isempty(du) ? nothing : first(du),
         last_du=isempty(du) ? nothing : last(du),
         next_du=next_du,
         outer_f=outer_f,
-        min_rv=final_min_rv.value,
-        min_rv_V=final_min_rv.V,
+        min_rv=final_min_rv.rv,
+        min_rv_V=final_min_rv.v,
         min_rv_r=final_min_rv.r,
-        min_rv_Q=final_min_rv.Q,
+        min_rv_Q=final_min_rv.q,
         max_rho=throat.max_rho,
         min_throat_y=throat.min_y,
+        vtrap_status=vtrap_info.status,
+        direct_vtrap_V=isnothing(direct_vtrap) ? nothing : direct_vtrap.v,
+        direct_vtrap_U=isnothing(direct_vtrap) ? nothing : direct_vtrap.u,
+        direct_vtrap_r=isnothing(direct_vtrap) ? nothing : direct_vtrap.r,
+        direct_vtrap_Q=isnothing(direct_vtrap) ? nothing : direct_vtrap.q,
+        vtrap_proxy_V=vtrap_info.closest.v,
+        vtrap_proxy_U=vtrap_info.closest.u,
+        vtrap_proxy_min_rv=vtrap_info.closest.rv,
+        vtrap_proxy_r=vtrap_info.closest.r,
+        vtrap_proxy_Q=vtrap_info.closest.q,
         row_trap_V=isnothing(row_trap) ? nothing : row_trap.V,
         row_trap_U=isnothing(row_trap) ? nothing : row_trap.U,
         slice_trap_V=isnothing(slice_trap) ? nothing : slice_trap.V,
@@ -199,7 +196,7 @@ function run_scan(::Type{T}) where {T<:Real}
     println("# qstar = ", qstar, ", Vmax = ", vmax, ", Delta V = ", dv,
             ", C = ", C, ", max_rows = ", max_rows)
     println("# Columns with `slice_trap_*` and final_AH_* are the direct Section IIIA diagnostics.")
-    println("# Missing trapped-surface columns mean this run only reached the limiting-surface proxy.")
+    println("# direct_vtrap_* is the row-local apparent horizon; vtrap_proxy_* is the closest positive-r_V sample when direct Vtrap is missing.")
     rows = [run_case(q0, qstar, vmax, dv, amplitude, C, Umax, max_rows)
             for q0 in qvalues]
     print_table(rows)

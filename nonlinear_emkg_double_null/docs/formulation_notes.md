@@ -604,25 +604,51 @@ V_trap proportional to (Q_* - Q0)^(-1/2),
 ```
 
 `examples/scan_gp2026_threshold.jl` now scans the paper's one-parameter
-family and prints both the direct Sec. IIIA columns (`slice_trap_*`,
-`final_AH_*`) and the limiting-surface proxy columns (`last_U`, `next_du`,
-`outer_f`, `min_rv`, `max_rho`). A first 120-row `Vmax=400` scan gives a
-smooth proxy trend on the BH side,
+family and prints both the direct Sec. IIIA columns (`direct_vtrap_*`,
+`slice_trap_*`, `final_AH_*`) and the limiting-surface proxy columns
+(`last_U`, `next_du`, `outer_f`, `min_rv`, `max_rho`,
+`vtrap_proxy_*`). The helper
 
-| `Q0` | `last_U` | `min r_V` on final row | `max rho` | direct `V_trap` |
-| ---: | ---: | ---: | ---: | :--- |
-| 1.0000000 | -0.250919 | 8.87e-4 | 2.08 | missing |
-| 1.0020000 | -0.224237 | 9.04e-4 | 2.21 | missing |
-| 1.0030000 | -0.210081 | 9.13e-4 | 2.29 | missing |
-| 1.0033218 | -0.205395 | 9.16e-4 | 2.31 | missing |
+```julia
+vtrap_diagnostic(rows; missing_status)
+```
+
+defines `direct_vtrap_*` as the earliest row-local apparent-horizon crossing
+in `V`, where the centered row diagnostic `r_V` reaches zero. If no crossing
+is present, `vtrap_status` records why the run stopped and `vtrap_proxy_*`
+reports the row point with the smallest still-positive `r_V`.
+
+A first 120-row `Vmax=400` scan gives a smooth proxy trend on the BH side,
+
+| `Q0` | `last_U` | `vtrap_status` | proxy `V` | proxy `min r_V` | `max rho` | direct `V_trap` |
+| ---: | ---: | :--- | ---: | ---: | ---: | :--- |
+| 1.0000000 | -0.250919 | `max_rows` | 104.08 | 8.87e-4 | 2.08 | missing |
+| 1.0020000 | -0.224237 | `max_rows` | 103.68 | 9.04e-4 | 2.21 | missing |
+| 1.0030000 | -0.210081 | `max_rows` | 103.28 | 9.13e-4 | 2.29 | missing |
+| 1.0033218 | -0.205395 | `max_rows` | 103.12 | 9.16e-4 | 2.31 | missing |
 
 This is suggestive of the expected limiting surface as `Q0` approaches the
 quoted `Q_*`, but it is not yet a measurement of the Sec. IIIA power laws.
-The current horizon/trapped-surface extraction does not see trapped cells in
-these paper-AMR rows before Eq. (9) has accumulated at the marginal surface.
-The next debugging target is therefore the trapped-region detector and/or the
-ability to continue through the accumulated event-horizon layer, not another
+The direct trapped-surface extraction does not see trapped cells in these
+paper-AMR rows before Eq. (9) has accumulated at the marginal surface. This is
+not just a Float64 detector miss: a 160-bit `Q0=1.0`, 220-row check still has
+positive proxy `min r_V=7.63e-4` at `V=240.64`. The next debugging target is
+therefore why the row evolution approaches a positive-expansion limiting
+surface instead of producing the Sec. IIIA trapped-surface curve, not another
 claim of critical scaling.
+
+`examples/check_gp2026_stiffness.jl` tests whether this is a local stepping
+problem. It evolves to a chosen base row, then advances to the same target `U`
+with one row step and with repeated substeps. At `Q0=1.0033218`, `Vmax=400`,
+`Delta V=0.08`, `C=0.6`, and 40 paper-AMR rows, the outer-boundary rule selects
+`Delta U=2.14e-4`, while the local geometric limiter would select
+`8.45e-6`. Using the full outer step, the one-step row is finite and Picard
+iterations converge, but it differs from a 16-substep reference by
+`max |Delta r|=9.21e-4` and `max |Delta log f|=4.27e-4`. Repeating the same
+base-row probe with `Delta U` reduced by a factor `0.04` gives
+`max |Delta r|=3.95e-8` and `max |Delta log f|=1.94e-8`. This points to a
+local stiffness/step-size problem in the row march, not primarily to a lack of
+fixed-point iterations inside the cell solve.
 
 To make the near-horizon throat explicit, the row diagnostics now include
 

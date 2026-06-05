@@ -51,6 +51,12 @@ function run_paper_amr(::Type{T}) where {T<:Real}
     next_du = 2C / last(outer_f)
     stalled = final.u + next_du == final.u
     hit_invalid_row = last_valid < length(evolved.rows)
+    missing_status = hit_invalid_row ? :invalid_row :
+                     final.u == Umax ? :reached_umax :
+                     stalled ? :precision_stalled :
+                     length(evolved.rows) >= max_rows ? :max_rows :
+                     :stopped
+    vtrap = vtrap_diagnostic(rows; missing_status)
 
     println("Gelles-Pretorius 2026 paper-style Eq. 9 AMR")
     println("numeric type = ", T)
@@ -69,6 +75,9 @@ function run_paper_amr(::Type{T}) where {T<:Real}
     println("Delta U extrema = ", isempty(du) ? nothing : extrema(du))
     println("outer f_code first/last = ", (first(outer_f), last(outer_f)))
     println("next Eq. 9 Delta U = ", next_du)
+    println("Vtrap status = ", vtrap.status)
+    println("direct Vtrap sample = ", vtrap.trap)
+    println("closest Vtrap proxy = ", vtrap.closest)
 
     throat = throat_row_diagnostics(final)
     println("throat min(r-|Q|) = ", throat.min_y)

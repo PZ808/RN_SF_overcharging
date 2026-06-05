@@ -488,6 +488,91 @@ function apparent_horizon_location(u::AbstractVector, rv::AbstractVector)
     return u[i - 1] + fraction * (u[i] - u[i - 1])
 end
 
+struct TrappedSurfaceSample{T<:Real}
+    row_index::Int
+    u::T
+    v::T
+    r::T
+    q::T
+    rv::T
+end
+
+struct VTrapDiagnostic{T<:Real}
+    status::Symbol
+    trapped::Bool
+    trap::Union{Nothing,TrappedSurfaceSample{T}}
+    closest::TrappedSurfaceSample{T}
+end
+
+"""
+Centered outgoing expansion proxy `r_V` on a single GP2026 `U` row.
+
+The apparent-horizon condition used by Gelles-Pretorius is a sign flip of the
+outgoing expansion, `theta_+ proportional to r_V`. This helper keeps the
+row-oriented diagnostic consistent with the fixed-`V` slice detector.
+"""
+row_outgoing_expansion(row::NLRow) = coordinate_derivative(row.r, row.v)
+
+function row_expansion_minimum(row::NLRow; row_index::Int=0)
+    rv = row_outgoing_expansion(row)
+    value, index = findmin(rv)
+    return TrappedSurfaceSample(row_index, row.u, row.v[index], row.r[index],
+                                row.Q[index], value)
+end
+
+function row_apparent_horizon_crossing(row::NLRow; row_index::Int=0)
+    rv = row_outgoing_expansion(row)
+    crossing = findfirst(value -> value <= zero(value), rv)
+    isnothing(crossing) && return nothing
+    if crossing == firstindex(rv)
+        return TrappedSurfaceSample(row_index, row.u, row.v[crossing],
+                                    row.r[crossing], row.Q[crossing],
+                                    rv[crossing])
+    end
+
+    i = crossing
+    fraction = rv[i - 1] / (rv[i - 1] - rv[i])
+    return TrappedSurfaceSample(
+        row_index,
+        row.u,
+        segment_value(row.v, i - 1, fraction),
+        segment_value(row.r, i - 1, fraction),
+        segment_value(row.Q, i - 1, fraction),
+        zero(rv[i]),
+    )
+end
+
+"""
+Return the direct `Vtrap` diagnostic for GP2026 row data.
+
+If a row contains `r_V <= 0`, `trap` is the earliest apparent-horizon point in
+`V` among all rows. If no such point exists, `trap === nothing`, `status` is the
+caller-provided missing status, and `closest` records the row point with the
+smallest positive outgoing expansion. This makes a missing `Vtrap` distinguish
+"not trapped yet" from "the run stalled before trapping".
+"""
+function vtrap_diagnostic(rows::AbstractVector{<:NLRow}; missing_status::Symbol=:untrapped)
+    isempty(rows) && throw(ArgumentError("Vtrap diagnostic needs at least one row"))
+
+    closest = row_expansion_minimum(first(rows); row_index=firstindex(rows))
+    trap = nothing
+    for (row_index, row) in pairs(rows)
+        minimum_sample = row_expansion_minimum(row; row_index)
+        if minimum_sample.rv < closest.rv
+            closest = minimum_sample
+        end
+
+        crossing = row_apparent_horizon_crossing(row; row_index)
+        if !isnothing(crossing) &&
+           (isnothing(trap) || crossing.v < trap.v)
+            trap = crossing
+        end
+    end
+
+    status = isnothing(trap) ? missing_status : :trapped
+    return VTrapDiagnostic(status, !isnothing(trap), trap, closest)
+end
+
 """
 Return the GP2026 reduced scalar amplitude `|r*phi_GP|` on one stored slice.
 

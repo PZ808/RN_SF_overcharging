@@ -94,6 +94,12 @@ function run_comparison(::Type{T}) where {T<:Real}
     end
     hit_invalid_row = last_valid < length(raw.rows)
     coordinate_stalled = final_row.u + next_controlled_du == final_row.u
+    missing_status = hit_invalid_row ? :invalid_row :
+                     final_row.u == Umax ? :reached_umax :
+                     coordinate_stalled ? :precision_stalled :
+                     length(raw.rows) >= max_rows ? :max_rows :
+                     :stopped
+    vtrap = vtrap_diagnostic(valid_rows.rows; missing_status)
 
     println("Gelles-Pretorius 2026 U-step evolution")
     println("numeric type = ", T)
@@ -123,6 +129,9 @@ function run_comparison(::Type{T}) where {T<:Real}
     println("next geometric Delta U = ", next_geometric_du)
     println("next throat Delta U = ", next_throat_du)
     println("next controlled Delta U = ", next_controlled_du)
+    println("Vtrap status = ", vtrap.status)
+    println("direct Vtrap sample = ", vtrap.trap)
+    println("closest Vtrap proxy = ", vtrap.closest)
     println("first trapped (V,U-cell) = ", trap)
     throat = throat_row_diagnostics(final_row)
     println("throat min(r-|Q|) = ", throat.min_y)
