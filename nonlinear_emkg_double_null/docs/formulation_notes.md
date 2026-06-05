@@ -650,6 +650,55 @@ base-row probe with `Delta U` reduced by a factor `0.04` gives
 local stiffness/step-size problem in the row march, not primarily to a lack of
 fixed-point iterations inside the cell solve.
 
+`examples/analyze_gp2026_trapped_surfaces.jl` adds the corresponding
+trapped-surface analysis. It follows the row point where `r_V` is smallest and
+prints both null expansions, the renormalized Hawking mass, and the horizon
+function
+
+```text
+H = 1 - 2M/r + Q^2/r^2 = -4 r_U r_V/f.
+```
+
+For the 120-row paper-AMR run above, the closest point is on the last row at
+`V=103.12`: `r_V=9.16e-4`, `r_U=-3.09e5`, `H=1.83e-3`, and
+`r-r_+=6.27e-3`. The identity for `H` closes to roundoff, so the detector and
+mass diagnostic agree that this point is still outside the apparent horizon.
+A 1000-row local-controller run reaches `U=-0.202078` and gives its closest
+point at `V=18.32`, with `r_V=9.93e-4`, `H=1.95e-3`, and `r-r_+=8.45e-3`.
+Thus the missing `Vtrap` is not currently a sign convention error in the
+trapped-surface detector: both expansion and Hawking-mass diagnostics remain
+positive before the run stops or exhausts the row budget.
+
+The row marcher now supports adaptive substepping inside a selected macro row
+step. For example, `step_control=:outer, substep_control=:local` keeps the
+paper-style Eq. (9) macro target but advances toward it with smaller stored
+rows satisfying the local geometric/throat caps. This substantially changes the
+near-marginal behavior but does not yet reproduce the GP trapped-surface curve.
+For the quoted-critical run with `max_rows=6000`, the closest point is
+`V=144.40`, `r_V=6.13e-6`, `H=1.22e-5`, and `r-r_+=5.33e-5`; for a BH-side
+`Q0=1.0` run it reaches `V=139.04`, `r_V=5.62e-6`, `H=1.12e-5`, and
+`r-r_+=4.53e-5`. A middle BH-side sample at `Q0=1.002` gives the same pattern:
+`V=144.40`, `r_V=5.90e-6`, `H=1.18e-5`, and `r-r_+=4.97e-5`. These runs
+remain future-untrapped (`r_U<0`, `r_V>0`) and
+eventually stall in the limiting layer. Substepping therefore confirms the
+outer row step was too crude, but it also exposes a remaining physics or
+coordinate/equation discrepancy: the solution approaches a marginal surface
+from outside instead of crossing to the Sec. IIIA apparent horizon.
+
+Tail fits in the trapped-surface analyzer make this more quantitative. On the
+last 300 proxy samples, a floor model `y(V)=y_inf+a/V` gives positive limits
+and no finite crossing. For the quoted-critical run, the fitted floors are
+`r_V -> 6.02e-6`, `H -> 1.20e-5`, and `r-r_+ -> 5.23e-5`; for the BH-side
+`Q0=1.0` run they are `r_V -> 5.57e-6`, `H -> 1.11e-5`, and
+`r-r_+ -> 4.49e-5`; and for `Q0=1.002` they are `r_V -> 5.80e-6`,
+`H -> 1.16e-5`, and `r-r_+ -> 4.88e-5`. A zero-asymptote power-law fit returns exponents near
+zero, another sign of plateauing. This does not support a simple "GP
+extrapolated a finite trapped surface from our kind of tail" explanation:
+with the current equations/data, both the direct signs and the fitted tails
+remain outside the future apparent horizon. Negative values of `H` that appear
+near the small-`V` initial corner are classified separately by expansion signs
+and are not future trapped (`r_U` and `r_V` are both positive there).
+
 To make the near-horizon throat explicit, the row diagnostics now include
 
 ```text

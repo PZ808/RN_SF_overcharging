@@ -213,6 +213,15 @@ end
     paper_step = evolve_gp2026_u_adaptive(initial, ep; Umax=-0.9, C,
                                           iterations=10, step_control=:outer)
     @test last(paper_step.rows).u ≈ -0.9
+    substepped_paper =
+        evolve_gp2026_u_adaptive(initial, ep; Umax=-0.9, C, iterations=10,
+                                 step_control=:outer, substep_control=:local)
+    @test last(substepped_paper.rows).u ≈ -0.9
+    @test all(row -> all(isfinite, row.r) && all(isfinite, row.logf) &&
+                     all(isfinite, row.phi_re) && all(isfinite, row.phi_im) &&
+                     all(isfinite, row.Au) && all(isfinite, row.Av) &&
+                     all(isfinite, row.Q) && all(>(0), row.r),
+              substepped_paper.rows)
 
     geometric_step = evolve_gp2026_u_adaptive(initial, ep; Umax=-0.9, C,
                                               iterations=10, step_control=:geometric)

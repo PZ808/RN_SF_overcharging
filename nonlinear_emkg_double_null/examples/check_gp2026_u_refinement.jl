@@ -47,6 +47,24 @@ function run_comparison(::Type{T}) where {T<:Real}
     end
     max_delta_rho = real_argument(11, "0.25", T)
     match_rho = real_argument(12, "2.0", T)
+    substep_control_argument = length(ARGS) >= 13 ? ARGS[13] : "none"
+    substep_control_argument in ("none", "outer", "max-row", "geometric", "throat", "local") ||
+        throw(ArgumentError("substep control must be none, outer, max-row, geometric, throat, or local"))
+    substep_control = if substep_control_argument == "none"
+        :none
+    elseif substep_control_argument == "outer"
+        :outer
+    elseif substep_control_argument == "max-row"
+        :max_row
+    elseif substep_control_argument == "geometric"
+        :geometric
+    elseif substep_control_argument == "throat"
+        :throat
+    else
+        :local
+    end
+    substep_C = real_argument(14, string(C), T)
+    max_substeps_per_row = integer_argument(15, 10_000)
 
     U0 = parse(T, "-1.0")
     ep = EvolutionParams(
@@ -62,7 +80,9 @@ function run_comparison(::Type{T}) where {T<:Real}
     initialize_gp2026_single_pulse!(seed, grid, ep)
     initial = row_from_rectangular(seed, grid, 1)
     raw = evolve_gp2026_u_adaptive(initial, ep; Umax, C, iterations=10, max_rows,
-                                   hyperbolic_charge, step_control, max_delta_rho)
+                                   hyperbolic_charge, step_control, max_delta_rho,
+                                   substep_control, substep_C,
+                                   max_substeps_per_row)
 
     last_valid = findlast(row -> all(isfinite, row.r) && all(isfinite, row.logf) &&
                                   all(isfinite, row.phi_re) && all(isfinite, row.phi_im) &&
@@ -77,21 +97,12 @@ function run_comparison(::Type{T}) where {T<:Real}
     trap = length(valid_rows.rows) >= 2 ? first_trapped_slice(state) : nothing
     last_fcode = exp(last(final_row.logf))
     max_fcode = exp(maximum(final_row.logf))
-    next_paper_du = 2C / last_fcode
-    next_max_row_du = 2C / max_fcode
-    next_geometric_du = N.geometric_row_du(valid_rows.rows, C)
-    next_throat_du = throat_row_du(valid_rows.rows, C; max_delta_rho)
-    next_controlled_du = if step_control === :outer
-        next_paper_du
-    elseif step_control === :max_row
-        next_max_row_du
-    elseif step_control === :geometric
-        next_geometric_du
-    elseif step_control === :throat
-        next_throat_du
-    else
-        minimum((next_max_row_du, next_geometric_du, next_throat_du))
-    end
+    next_du_info = gp2026_row_step_du(valid_rows.rows, C, step_control; max_delta_rho)
+    next_paper_du = next_du_info.outer_du
+    next_max_row_du = next_du_info.max_row_du
+    next_geometric_du = next_du_info.geometric_du
+    next_throat_du = next_du_info.throat_du
+    next_controlled_du = next_du_info.selected
     hit_invalid_row = last_valid < length(raw.rows)
     coordinate_stalled = final_row.u + next_controlled_du == final_row.u
     missing_status = hit_invalid_row ? :invalid_row :
@@ -114,6 +125,9 @@ function run_comparison(::Type{T}) where {T<:Real}
     println("matching rho = ", match_rho)
     println("charge evolution = ", charge_mode)
     println("step control = ", step_control_argument)
+    println("substep control = ", substep_control_argument)
+    println("substep C = ", substep_C)
+    println("max substeps per row = ", max_substeps_per_row)
     println("requested Umax = ", Umax)
     println("stored U rows = ", length(raw.rows))
     println("valid U rows = ", length(valid_rows.rows))

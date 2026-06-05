@@ -72,7 +72,8 @@ function final_horizon_properties(state::AdaptiveNLState)
             one_minus_r_over_M=one(eltype(upper.r)) - r / m)
 end
 
-function run_case(q0, qstar, vmax, dv, amplitude, C, Umax, max_rows)
+function run_case(q0, qstar, vmax, dv, amplitude, C, Umax, max_rows,
+                  substep_control, substep_C, max_substeps_per_row)
     T = promote_type(typeof(q0), typeof(qstar), typeof(vmax), typeof(dv),
                      typeof(amplitude), typeof(C), typeof(Umax))
     U0 = parse(T, "-1.0")
@@ -90,7 +91,8 @@ function run_case(q0, qstar, vmax, dv, amplitude, C, Umax, max_rows)
     initial = row_from_rectangular(seed, grid, 1)
     evolved = evolve_gp2026_u_adaptive(initial, ep; Umax, C, iterations=10,
                                        max_rows, hyperbolic_charge=true,
-                                       step_control=:outer)
+                                       step_control=:outer, substep_control,
+                                       substep_C, max_substeps_per_row)
 
     last_valid = findlast(finite_row, evolved.rows)
     isnothing(last_valid) && error("initial GP row is invalid for Q0=$q0")
@@ -191,18 +193,32 @@ function run_scan(::Type{T}) where {T<:Real}
     C = real_argument(6, "0.6", T)
     Umax = real_argument(7, "1.6", T)
     max_rows = integer_argument(8, 180)
+    substep_control_argument = length(ARGS) >= 9 ? ARGS[9] : "none"
+    substep_control_argument in ("none", "outer", "max-row", "geometric", "throat", "local") ||
+        throw(ArgumentError("substep control must be none, outer, max-row, geometric, throat, or local"))
+    substep_control = substep_control_argument == "none" ? :none :
+                      substep_control_argument == "outer" ? :outer :
+                      substep_control_argument == "max-row" ? :max_row :
+                      substep_control_argument == "geometric" ? :geometric :
+                      substep_control_argument == "throat" ? :throat :
+                      :local
+    substep_C = real_argument(10, string(C), T)
+    max_substeps_per_row = integer_argument(11, 10_000)
 
     println("# GP2026 Section IIIA threshold scan")
     println("# qstar = ", qstar, ", Vmax = ", vmax, ", Delta V = ", dv,
-            ", C = ", C, ", max_rows = ", max_rows)
+            ", C = ", C, ", max_rows = ", max_rows,
+            ", substep_control = ", substep_control,
+            ", substep_C = ", substep_C)
     println("# Columns with `slice_trap_*` and final_AH_* are the direct Section IIIA diagnostics.")
     println("# direct_vtrap_* is the row-local apparent horizon; vtrap_proxy_* is the closest positive-r_V sample when direct Vtrap is missing.")
-    rows = [run_case(q0, qstar, vmax, dv, amplitude, C, Umax, max_rows)
+    rows = [run_case(q0, qstar, vmax, dv, amplitude, C, Umax, max_rows,
+                     substep_control, substep_C, max_substeps_per_row)
             for q0 in qvalues]
     print_table(rows)
 end
 
-precision_bits = integer_argument(9, 0)
+precision_bits = integer_argument(12, 0)
 if precision_bits > 0
     setprecision(precision_bits) do
         run_scan(BigFloat)

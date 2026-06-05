@@ -956,6 +956,38 @@ function geometric_row_du(rows::AbstractVector{<:NLRow}, C::Real)
     return minimum(candidates)
 end
 
+const GP2026_ROW_STEP_CONTROLS = (:outer, :max_row, :geometric, :throat, :local)
+
+function gp2026_row_step_du(rows::AbstractVector{<:NLRow}, C::Real,
+                            step_control::Symbol; max_delta_rho=0.25)
+    C > 0 || throw(ArgumentError("C must be positive"))
+    step_control in GP2026_ROW_STEP_CONTROLS ||
+        throw(ArgumentError("step_control must be :outer, :max_row, :geometric, :throat, or :local"))
+    previous = last(rows)
+    outer_du = 2C / exp(last(previous.logf))
+    max_row_du = 2C / exp(maximum(previous.logf))
+    geometric_du = geometric_row_du(rows, C)
+    throat_du = throat_row_du(rows, C; max_delta_rho)
+    selected = if step_control === :outer
+        outer_du
+    elseif step_control === :max_row
+        max_row_du
+    elseif step_control === :geometric
+        isfinite(geometric_du) ? geometric_du : max_row_du
+    elseif step_control === :throat
+        isfinite(throat_du) ? throat_du : max_row_du
+    else
+        minimum((max_row_du, geometric_du, throat_du))
+    end
+    return (; selected, outer_du, max_row_du, geometric_du, throat_du)
+end
+
+finite_nlrow(row::NLRow) =
+    all(isfinite, row.r) && all(isfinite, row.logf) &&
+    all(isfinite, row.phi_re) && all(isfinite, row.phi_im) &&
+    all(isfinite, row.Au) && all(isfinite, row.Av) &&
+    all(isfinite, row.Q) && all(>(zero(eltype(row.r))), row.r)
+
 """
 Evolve GP2026 initial data with a row-wise `U` step criterion.
 
@@ -967,49 +999,65 @@ move away from `Vmax` after apparent-horizon formation, so the default
 the local geometric condition `|r_U| Delta U <= C |Delta r|`, following the
 spirit of Gundlach/Baumgarte/Hilditch arXiv:1908.05971. The literal paper
 rule remains available as `step_control=:outer`; `step_control=:max_row`
-uses only the largest-`f_code` limiter.
+uses only the largest-`f_code` limiter. Setting `substep_control` to one of
+the same controls advances each selected macro step through smaller stored
+substeps, which is useful when the paper macro step is too large for the local
+cell solve.
 """
 function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6, C=0.6,
                                   U0=initial.u, V0=first(initial.v), M0=ep.rn.M,
                                   iterations::Int=10, max_rows::Int=100_000,
                                   hyperbolic_charge::Bool=true,
                                   step_control::Symbol=:local,
-                                  max_delta_rho=0.25)
+                                  max_delta_rho=0.25,
+                                  substep_control::Symbol=:none,
+                                  substep_C=C,
+                                  max_substeps_per_row::Int=10_000)
     C > 0 || throw(ArgumentError("C must be positive"))
+    substep_C > 0 || throw(ArgumentError("substep_C must be positive"))
     Umax > initial.u || throw(ArgumentError("Umax must exceed initial U"))
     max_rows >= 2 || throw(ArgumentError("max_rows must be at least 2"))
-    step_control in (:outer, :max_row, :geometric, :throat, :local) ||
+    max_substeps_per_row >= 1 ||
+        throw(ArgumentError("max_substeps_per_row must be at least 1"))
+    step_control in GP2026_ROW_STEP_CONTROLS ||
         throw(ArgumentError("step_control must be :outer, :max_row, :geometric, :throat, or :local"))
+    substep_control in (:none, GP2026_ROW_STEP_CONTROLS...) ||
+        throw(ArgumentError("substep_control must be :none, :outer, :max_row, :geometric, :throat, or :local"))
     rows = [initial]
     while last(rows).u < Umax && length(rows) < max_rows
         previous = last(rows)
-        outer_du = 2C / exp(last(previous.logf))
-        max_row_du = 2C / exp(maximum(previous.logf))
-        geometric_du = geometric_row_du(rows, C)
-        throat_du = throat_row_du(rows, C; max_delta_rho)
-        du = if step_control === :outer
-            outer_du
-        elseif step_control === :max_row
-            max_row_du
-        elseif step_control === :geometric
-            isfinite(geometric_du) ? geometric_du : max_row_du
-        elseif step_control === :throat
-            isfinite(throat_du) ? throat_du : max_row_du
-        else
-            minimum((max_row_du, geometric_du, throat_du))
-        end
+        du = gp2026_row_step_du(rows, C, step_control; max_delta_rho).selected
         isfinite(du) && du > 0 || break
-        next_u = min(Umax, previous.u + du)
-        next_u > previous.u || break
-        south = gp2026_na_boundary_point(next_u, ep; U0, V0, M0)
-        next = advance_u_row(previous, south, ep;
-                             iterations, reduced_scalar=true, hyperbolic_charge)
-        push!(rows, next)
-        all(isfinite, next.r) && all(isfinite, next.logf) &&
-            all(isfinite, next.phi_re) && all(isfinite, next.phi_im) &&
-            all(isfinite, next.Au) && all(isfinite, next.Av) &&
-            all(isfinite, next.Q) && all(>(zero(eltype(next.r))), next.r) ||
-            break
+        target_u = min(Umax, previous.u + du)
+        target_u > previous.u || break
+
+        if substep_control === :none
+            south = gp2026_na_boundary_point(target_u, ep; U0, V0, M0)
+            next = advance_u_row(previous, south, ep;
+                                 iterations, reduced_scalar=true, hyperbolic_charge)
+            push!(rows, next)
+            finite_nlrow(next) || break
+        else
+            substeps = 0
+            while last(rows).u < target_u && length(rows) < max_rows
+                current = last(rows)
+                substep = gp2026_row_step_du(rows, substep_C, substep_control;
+                                             max_delta_rho).selected
+                isfinite(substep) && substep > 0 || break
+                next_u = min(target_u, current.u + substep)
+                next_u > current.u || break
+                south = gp2026_na_boundary_point(next_u, ep; U0, V0, M0)
+                next = advance_u_row(current, south, ep;
+                                     iterations, reduced_scalar=true,
+                                     hyperbolic_charge)
+                push!(rows, next)
+                finite_nlrow(next) || break
+                substeps += 1
+                substeps < max_substeps_per_row || break
+            end
+            last(rows).u >= target_u || break
+            finite_nlrow(last(rows)) || break
+        end
     end
     return UAdaptiveNLState(rows)
 end
