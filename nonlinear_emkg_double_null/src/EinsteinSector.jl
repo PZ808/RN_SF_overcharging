@@ -1,3 +1,10 @@
+"""
+Legacy fixed-background metric container from the first scaffold.
+
+The active fully nonlinear double-null code stores `r`, `logf`, scalar fields,
+potentials, and charge together in `NLState`, and advances them through
+`evolve_nonlinear!` / `evolve_gp2026_u_adaptive`.
+"""
 struct MetricState{T<:Real}
     r::Matrix{T}
     f::Matrix{T}
@@ -17,9 +24,10 @@ end
 function einstein_backreaction_rhs!(duv_metric::MetricState, metric::MetricState,
                                     matter::State, g::Grid, ep::EvolutionParams)
     throw(ErrorException(
-        "The fully nonlinear Einstein sector is not implemented yet. " *
-        "Next step: derive double-null equations for r(u,v) and f(u,v) " *
-        "from the EMKG stress tensor and replace the fixed RN metric calls."
+        "`einstein_backreaction_rhs!` is a legacy scaffold and is not the " *
+        "active nonlinear evolution path. Use `NLState` with " *
+        "`evolve_nonlinear!` or the GP2026 row marcher " *
+        "`evolve_gp2026_u_adaptive`; the nonlinear metric equations are " *
+        "implemented there via `metric_rhs` and `step_nonlinear_cell!`."
     ))
 end
-

@@ -272,6 +272,19 @@ end
                                              rho_match=2.0)
     @test length(boundary_series) == 1
     @test boundary_series[1].row_index == 1
+    neutral_observables =
+        throat_boundary_observables(boundary_sample,
+                                    EvolutionParams(rn=RNParams(1.0, 1.0),
+                                                    scalar_charge=0.0))
+    @test neutral_observables.psi_abs ≈ sqrt(8.0)
+    @test neutral_observables.rphi_gp_abs ≈ sqrt(8.0) / sqrt(32pi)
+    @test neutral_observables.raw_phase ≈ -pi / 4
+    @test neutral_observables.rphi_gp_abs_v ≈ sqrt(2.0) / sqrt(32pi)
+    @test neutral_observables.covariant_phase_v ≈ 0.0 atol=1.0e-14
+    @test neutral_observables.covariant_dv_rphi_abs ≈ sqrt(2.0) / sqrt(32pi)
+    @test neutral_observables.q_v_source ≈ 0.0
+    @test neutral_observables.q_v_residual ≈ 0.0
+    @test neutral_observables.one_minus_absq_over_r ≈ 1 - 1 / boundary_sample.r
 
     throat_step = evolve_gp2026_u_adaptive(initial, ep; Umax=-0.9, C,
                                            iterations=10, step_control=:throat)

@@ -37,27 +37,19 @@ function format_value(value)
 end
 
 function print_table(samples, ep; stride=1)
-    scale = sqrt(32 * pi)
     headers = (
         "row", "U", "V", "rho", "r", "Q", "r_minus_absQ", "logf", "f_code",
-        "rho_V", "r_V", "Q_V",
-        "Psi_re", "Psi_im", "rphi_GP_re", "rphi_GP_im", "abs_rphi_GP",
-        "phase_rphi_GP", "A_U", "A_V", "J_V", "T_VV", "Q_V_source",
-        "Q_V_residual",
+        "logf_rho", "rho_V", "r_V", "Q_V",
+        "Psi_re", "Psi_im", "abs_Psi",
+        "rphi_GP_re", "rphi_GP_im", "abs_rphi_GP", "raw_phase_rphi_GP",
+        "abs_rphi_GP_V", "gauge_phase_V", "covariant_DV_abs_rphi",
+        "A_U", "A_V", "J_V", "T_VV", "outgoing_constraint_source",
+        "Q_V_source", "Q_V_residual", "Q_over_r", "one_minus_absQ_over_r",
     )
     println(join(headers, '\t'))
     for sample in samples[1:stride:end]
+        observables = throat_boundary_observables(sample, ep)
         f = exp(sample.logf)
-        source = stress_energy_reduced_scalar(
-            sample.r, f, sample.q, zero(sample.r), sample.r_v,
-            sample.phi_re, sample.phi_im,
-            zero(sample.phi_re_v), sample.phi_re_v,
-            zero(sample.phi_im_v), sample.phi_im_v,
-            sample.Au, sample.Av, ep.scalar_charge,
-        )
-        q_v_source = -sample.r^2 * source.Jv / 8
-        rphi_re = sample.phi_re / scale
-        rphi_im = sample.phi_im / scale
         values = (
             sample.row_index,
             sample.u,
@@ -68,21 +60,29 @@ function print_table(samples, ep; stride=1)
             sample.y,
             sample.logf,
             f,
+            observables.logf_rho,
             sample.rho_v,
             sample.r_v,
             sample.q_v,
             sample.phi_re,
             sample.phi_im,
-            rphi_re,
-            rphi_im,
-            hypot(rphi_re, rphi_im),
-            atan(rphi_im, rphi_re),
+            observables.psi_abs,
+            observables.rphi_gp_re,
+            observables.rphi_gp_im,
+            observables.rphi_gp_abs,
+            observables.raw_phase,
+            observables.rphi_gp_abs_v,
+            observables.covariant_phase_v,
+            observables.covariant_dv_rphi_abs,
             sample.Au,
             sample.Av,
-            source.Jv,
-            source.Tvv,
-            q_v_source,
-            sample.q_v - q_v_source,
+            observables.Jv,
+            observables.Tvv,
+            observables.outgoing_constraint_source,
+            observables.q_v_source,
+            observables.q_v_residual,
+            observables.q_over_r,
+            observables.one_minus_absq_over_r,
         )
         println(join((format_value(value) for value in values), '\t'))
     end

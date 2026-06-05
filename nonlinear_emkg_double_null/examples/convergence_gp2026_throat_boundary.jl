@@ -66,18 +66,8 @@ function sample_arrays(samples, ep)
     q = [sample.q for sample in samples]
     amplitude = [hypot(sample.phi_re, sample.phi_im) / SQRT32PI
                  for sample in samples]
-    q_v_residual = Float64[]
-    for sample in samples
-        source = stress_energy_reduced_scalar(
-            sample.r, exp(sample.logf), sample.q, zero(sample.r), sample.r_v,
-            sample.phi_re, sample.phi_im,
-            zero(sample.phi_re_v), sample.phi_re_v,
-            zero(sample.phi_im_v), sample.phi_im_v,
-            sample.Au, sample.Av, ep.scalar_charge,
-        )
-        q_v_source = -sample.r^2 * source.Jv / 8
-        push!(q_v_residual, sample.q_v - q_v_source)
-    end
+    q_v_residual = [throat_boundary_observables(sample, ep).q_v_residual
+                    for sample in samples]
     return (; u, v, r, q, amplitude, q_v_residual)
 end
 

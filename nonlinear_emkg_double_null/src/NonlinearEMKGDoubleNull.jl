@@ -52,6 +52,7 @@ export charged_flux_integrated_charge_profile
 export charged_mass_flux_u_profile, charged_flux_integrated_mass_profile
 export outgoing_expansion_profile, apparent_horizon_location
 export gp2026_rphi_profile, gp2026_horizon_rphi_series
+export ThroatBoundaryObservables, throat_boundary_observables
 export horizon_charge_density_series, conformal_weight_s
 export rstar, areal_radius, metric_F, metric_f, metric_ftilde, radius_from_rstar, compact_v_from_ef_v
 

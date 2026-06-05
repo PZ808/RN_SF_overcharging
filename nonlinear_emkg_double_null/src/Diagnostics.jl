@@ -522,6 +522,87 @@ function gp2026_horizon_rphi_series(st::AdaptiveNLState)
     return horizon_v, horizon_u, amplitude
 end
 
+struct ThroatBoundaryObservables{T<:Real}
+    psi_abs::T
+    rphi_gp_re::T
+    rphi_gp_im::T
+    rphi_gp_abs::T
+    raw_phase::T
+    rphi_gp_abs_v::T
+    covariant_phase_v::T
+    covariant_dv_rphi_abs::T
+    Jv::T
+    Tvv::T
+    q_v_source::T
+    q_v_residual::T
+    outgoing_constraint_source::T
+    q_over_r::T
+    one_minus_absq_over_r::T
+    logf_rho::T
+end
+
+"""
+Gauge-invariant and near-throat observables at a fixed-`rho` boundary sample.
+
+The stored GP2026 scalar is `Psi=sqrt(32*pi)*r*phi_GP`. The returned
+`rphi_gp_*` fields divide out this normalization. `raw_phase` is included for
+mode-tracking convenience, while `covariant_phase_v` is the gauge-invariant
+combination `theta_V - e A_V` computed from `Im(Psi^* D_V Psi)/|Psi|^2`.
+"""
+function throat_boundary_observables(sample::ThroatBoundarySample,
+                                     ep::EvolutionParams)
+    scale = sqrt(32 * pi)
+    f = exp(sample.logf)
+    source = stress_energy_reduced_scalar(
+        sample.r, f, sample.q, zero(sample.r), sample.r_v,
+        sample.phi_re, sample.phi_im,
+        zero(sample.phi_re_v), sample.phi_re_v,
+        zero(sample.phi_im_v), sample.phi_im_v,
+        sample.Au, sample.Av, ep.scalar_charge,
+    )
+
+    psi2 = sample.phi_re^2 + sample.phi_im^2
+    psi_abs = sqrt(psi2)
+    rphi_gp_re = sample.phi_re / scale
+    rphi_gp_im = sample.phi_im / scale
+    rphi_gp_abs = psi_abs / scale
+    raw_phase = atan(sample.phi_im, sample.phi_re)
+
+    Dv_re = sample.phi_re_v + ep.scalar_charge * sample.Av * sample.phi_im
+    Dv_im = sample.phi_im_v - ep.scalar_charge * sample.Av * sample.phi_re
+    rphi_gp_abs_v = psi_abs > 0 ?
+                    (sample.phi_re * sample.phi_re_v +
+                     sample.phi_im * sample.phi_im_v) / (psi_abs * scale) :
+                    zero(psi_abs)
+    covariant_phase_v = psi2 > 0 ?
+                        (sample.phi_re * Dv_im - sample.phi_im * Dv_re) / psi2 :
+                        zero(psi2)
+    covariant_dv_rphi_abs = hypot(Dv_re, Dv_im) / scale
+    q_v_source = -sample.r^2 * source.Jv / 8
+    logf_rho = isfinite(sample.rho_v) && sample.rho_v != 0 ?
+               sample.logf - log(abs(sample.rho_v)) :
+               typeof(sample.logf)(Inf)
+
+    return ThroatBoundaryObservables(
+        psi_abs,
+        rphi_gp_re,
+        rphi_gp_im,
+        rphi_gp_abs,
+        raw_phase,
+        rphi_gp_abs_v,
+        covariant_phase_v,
+        covariant_dv_rphi_abs,
+        source.Jv,
+        source.Tvv,
+        q_v_source,
+        sample.q_v - q_v_source,
+        outgoing_constraint_source(sample.r, f, source),
+        sample.q / sample.r,
+        one(sample.r) - abs(sample.q) / sample.r,
+        logf_rho,
+    )
+end
+
 function fit_power_law(x, y; xmin=nothing, xmax=nothing)
     idx = trues(length(x))
     if xmin !== nothing

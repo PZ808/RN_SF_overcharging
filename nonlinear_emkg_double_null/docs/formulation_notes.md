@@ -656,6 +656,21 @@ the paper-AMR row system and prints a TSV time series of the matching surface:
 `U`, `V(rho_match)`, `r`, `Q`, `r-|Q|`, `log f`, the stored scalar
 `Psi=sqrt(32*pi) r phi_GP`, the GP reduced amplitude `r phi_GP`, gauge
 potentials, `V` derivatives, and the local `J_V`, `T_VV`, and `Q_V` residual.
+The helper
+
+```julia
+throat_boundary_observables(sample, ep)
+```
+
+collects the gauge-invariant throat quantities used by that extractor:
+`|Psi|`, `|r phi_GP|`, the covariant phase gradient
+`theta_V - e A_V = Im(Psi^* D_V Psi)/|Psi|^2`, `|D_V(r phi_GP)|`,
+`J_V`, `T_VV`, the constraint source terms, `Q/r`, `1-|Q|/r`, and the
+coordinate-diagnostic
+`log f_(U rho) = log f_(U V) - log |rho_V|`. The raw scalar phase is still
+printed for mode tracking, but it is gauge dependent. Conversely,
+`theta_V-e A_V` is gauge invariant but divides by `|Psi|^2`, so mode fits
+should apply an amplitude threshold before using it in the wave tail.
 For example, at `Q0=1.0033218`, `Vmax=400`, `Delta V=0.08`, `C=0.6`,
 `rho_match=2`, and a 40-row cap, the extractor finds 25 fixed-`rho` samples,
 with the outer matching surface moving from `V approximately 0.20` to
