@@ -642,6 +642,27 @@ future matched full-system plus near-AdS2/JT patch: choose a `rho=rho_match`
 interface, pass `r`, `Q`, `Psi`, and fluxes across it, and evolve the deeper
 throat with effective near-horizon variables.
 
+The first fixed-`rho` boundary-layer extractor is now implemented. The
+diagnostic functions
+
+```julia
+throat_boundary_sample(row; rho_match=2.0)
+throat_boundary_series(rows; rho_match=2.0)
+```
+
+interpolate the largest-`V` crossing of a requested `rho_match` on each
+constant-`U` GP2026 row. `examples/extract_gp2026_throat_boundary.jl` evolves
+the paper-AMR row system and prints a TSV time series of the matching surface:
+`U`, `V(rho_match)`, `r`, `Q`, `r-|Q|`, `log f`, the stored scalar
+`Psi=sqrt(32*pi) r phi_GP`, the GP reduced amplitude `r phi_GP`, gauge
+potentials, `V` derivatives, and the local `J_V`, `T_VV`, and `Q_V` residual.
+For example, at `Q0=1.0033218`, `Vmax=400`, `Delta V=0.08`, `C=0.6`,
+`rho_match=2`, and a 40-row cap, the extractor finds 25 fixed-`rho` samples,
+with the outer matching surface moving from `V approximately 0.20` to
+`V approximately 4.40` over rows 16 through 36. This is intended as the first
+interface data stream for comparing the full nonlinear dynamics to a near-AdS2
+or resonant-QNM reduced model.
+
 A first check of the lapse in `rho` coordinates compares `log f` with
 
 ```text

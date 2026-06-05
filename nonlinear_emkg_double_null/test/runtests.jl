@@ -245,6 +245,34 @@ end
     @test range_width(lapse.logf_range) >= 0
     @test range_width(lapse.logf_rho_range) >= 0
 
+    synthetic_v = [0.0, 1.0, 2.0]
+    synthetic_q = ones(3)
+    synthetic_r = 1 .+ exp.(-[3.0, 2.0, 1.0])
+    synthetic_row = NLRow(
+        0.0,
+        synthetic_v,
+        synthetic_r,
+        zeros(3),
+        [1.0, 2.0, 3.0],
+        [-1.0, -2.0, -3.0],
+        zeros(3),
+        zeros(3),
+        synthetic_q,
+    )
+    boundary_sample = throat_boundary_sample(synthetic_row; rho_match=2.0)
+    @test !isnothing(boundary_sample)
+    @test boundary_sample.v ≈ 1.0
+    @test boundary_sample.rho ≈ 2.0
+    @test boundary_sample.y ≈ exp(-2.0)
+    @test boundary_sample.phi_re ≈ 2.0
+    @test boundary_sample.phi_im ≈ -2.0
+    @test boundary_sample.rho_v ≈ -1.0
+    @test isnothing(throat_boundary_sample(synthetic_row; rho_match=4.0))
+    boundary_series = throat_boundary_series(UAdaptiveNLState([synthetic_row]);
+                                             rho_match=2.0)
+    @test length(boundary_series) == 1
+    @test boundary_series[1].row_index == 1
+
     throat_step = evolve_gp2026_u_adaptive(initial, ep; Umax=-0.9, C,
                                            iterations=10, step_control=:throat)
     @test last(throat_step.rows).u ≈ -0.9

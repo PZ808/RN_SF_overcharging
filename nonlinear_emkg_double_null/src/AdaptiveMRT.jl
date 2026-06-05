@@ -88,6 +88,29 @@ struct RhoLapseDiagnostics{T<:Real}
     throat_count::Int
 end
 
+struct ThroatBoundarySample{T<:Real}
+    row_index::Int
+    u::T
+    v::T
+    rho::T
+    r::T
+    q::T
+    qabs::T
+    y::T
+    logf::T
+    phi_re::T
+    phi_im::T
+    Au::T
+    Av::T
+    rho_v::T
+    r_v::T
+    q_v::T
+    phi_re_v::T
+    phi_im_v::T
+    Au_v::T
+    Av_v::T
+end
+
 struct NLPoint{T<:Real}
     u::T
     v::T
@@ -389,6 +412,99 @@ function rho_lapse_diagnostics(row::NLRow; rho_min=2.0, charge_floor=nothing,
         length(throat_indices),
     )
 end
+
+function crossing_segments(values::AbstractVector{<:Real}, target::Real)
+    length(values) >= 2 || return Tuple{Int,Float64}[]
+    T = promote_type(eltype(values), typeof(target))
+    crossing = Tuple{Int,T}[]
+    target_t = convert(T, target)
+    for j in firstindex(values):lastindex(values)-1
+        left = convert(T, values[j]) - target_t
+        right = convert(T, values[j + 1]) - target_t
+        if left == 0
+            push!(crossing, (j, zero(T)))
+        elseif right == 0
+            push!(crossing, (j, one(T)))
+        elseif signbit(left) != signbit(right)
+            push!(crossing, (j, -left / (right - left)))
+        end
+    end
+    return crossing
+end
+
+segment_value(values::AbstractVector, j::Int, t) =
+    (one(t) - t) * values[j] + t * values[j + 1]
+
+segment_slope(values::AbstractVector, coordinates::AbstractVector, j::Int) =
+    (values[j + 1] - values[j]) / (coordinates[j + 1] - coordinates[j])
+
+"""
+Interpolate one fixed-`rho` boundary sample from a GP2026 row.
+
+`boundary=:outer` selects the largest-`V` crossing of `rho_match`, which is
+the natural matching surface when the near-horizon throat occupies the small
+`V` side of the row. Use `boundary=:inner` for the smallest-`V` crossing.
+Returns `nothing` if the row does not cross the requested `rho`.
+"""
+function throat_boundary_sample(row::NLRow; rho_match=2.0, boundary::Symbol=:outer,
+                                row_index::Int=0, charge_floor=nothing,
+                                throat_floor=nothing)
+    boundary in (:outer, :outermost, :last, :inner, :innermost, :first) ||
+        throw(ArgumentError("boundary must be :outer or :inner"))
+    throat = throat_row_diagnostics(row; charge_floor, throat_floor)
+    crossings = crossing_segments(throat.rho, rho_match)
+    isempty(crossings) && return nothing
+    j, t = boundary in (:inner, :innermost, :first) ? first(crossings) :
+           last(crossings)
+    dv = row.v[j + 1] - row.v[j]
+    dv > 0 || throw(ArgumentError("row V coordinates must increase"))
+    T = promote_type(typeof(row.u), eltype(row.v), eltype(row.r),
+                     eltype(row.Q), typeof(rho_match))
+    return ThroatBoundarySample{T}(
+        row_index,
+        row.u,
+        segment_value(row.v, j, t),
+        rho_match,
+        segment_value(row.r, j, t),
+        segment_value(row.Q, j, t),
+        segment_value(throat.qabs, j, t),
+        segment_value(throat.y, j, t),
+        segment_value(row.logf, j, t),
+        segment_value(row.phi_re, j, t),
+        segment_value(row.phi_im, j, t),
+        segment_value(row.Au, j, t),
+        segment_value(row.Av, j, t),
+        segment_slope(throat.rho, row.v, j),
+        segment_slope(row.r, row.v, j),
+        segment_slope(row.Q, row.v, j),
+        segment_slope(row.phi_re, row.v, j),
+        segment_slope(row.phi_im, row.v, j),
+        segment_slope(row.Au, row.v, j),
+        segment_slope(row.Av, row.v, j),
+    )
+end
+
+function throat_boundary_series(rows::AbstractVector{<:NLRow}; rho_match=2.0,
+                                boundary::Symbol=:outer, charge_floor=nothing,
+                                throat_floor=nothing)
+    isempty(rows) && return ThroatBoundarySample[]
+    T = promote_type(typeof(first(rows).u), eltype(first(rows).v),
+                     eltype(first(rows).r), eltype(first(rows).Q),
+                     typeof(rho_match))
+    samples = ThroatBoundarySample{T}[]
+    for (row_index, row) in pairs(rows)
+        sample = throat_boundary_sample(row; rho_match, boundary, row_index,
+                                        charge_floor, throat_floor)
+        isnothing(sample) || push!(samples, sample)
+    end
+    return samples
+end
+
+throat_boundary_series(state::UAdaptiveNLState; rho_match=2.0,
+                       boundary::Symbol=:outer, charge_floor=nothing,
+                       throat_floor=nothing) =
+    throat_boundary_series(state.rows; rho_match, boundary, charge_floor,
+                           throat_floor)
 
 function throat_row_du(rows::AbstractVector{<:NLRow}, C::Real; max_delta_rho=0.25)
     T = promote_type(typeof(C), typeof(first(rows).u), typeof(max_delta_rho))
