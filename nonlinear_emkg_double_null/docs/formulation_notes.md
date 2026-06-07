@@ -30,6 +30,69 @@ The current equation mapping is:
 | Eq. (10), renormalized mass | `M=r[1+4r_Ur_V/f_code+Q^2/r^2]/2` | implemented and conservatively checked |
 | Maxwell constraints from arXiv:2503.04881 Appendix D | `Q_U=r^2J_U/8`, `Q_V=-r^2J_V/8`, `F_UV=-Qf_code/(2r^2)` | implemented and conservatively checked |
 
+### GP2026 Equation Audit
+
+The June 2026 audit of arXiv:2602.11256 found one displayed-equation
+inconsistency that should not be copied into the code. With the paper's metric
+`ds^2=-2 f_GP dU dV+r^2 dOmega^2`, Eq. (4) is printed with
+`+f_GP^2/(2r^2)-2 f_GP^2 Q^2/r^4` in the `f_GP,UV` equation. Converting this
+literal equation to the stored variable `f_code=2 f_GP` would give
+
+```text
+(log f_code)_UV = f_code/(4r^2) + 2 r_U r_V/r^2
+                  - f_code Q^2/r^4 - scalar source.
+```
+
+That formula fails the exact RN electrovac residual test. The implemented
+formula,
+
+```text
+(log f_code)_UV = f_code/(2r^2) + 2 r_U r_V/r^2
+                  - f_code Q^2/r^4 - scalar source,
+```
+
+is the one that converges on exact RN. A direct residual comparison on extreme
+RN gave, at resolutions `(60,180)`, `(120,360)`, `(240,720)`,
+
+| formula | residuals |
+| :--- | :--- |
+| implemented `+f/(2r^2)-fQ^2/r^4` | `2.99e-1`, `1.55e-1`, `5.07e-2` |
+| literal GP Eq. (4) after `f_code=2f_GP` | `1.36`, `1.93`, `2.21` |
+| extra Coulomb factor `-2fQ^2/r^4` in `f_code` | `2.88`, `4.33`, `5.01` |
+
+Thus Eq. (4)'s displayed `f^2/(2r^2)` coefficient is best treated as a typo or
+normalization slip. The mass identity in Eq. (10) is internally consistent with
+the paper metric and remains our reference for diagnostics.
+
+Appendix B also appears to drop a minus sign in its displayed `r_U` formula.
+Differentiating the stated MRT-gauge relation
+`r_*(r_+ + V/2)+r_*(r_+ - U/2)=r_*(r)` gives a negative `r_U`; the main text
+also states that the GP single-pulse gauge has `r_U=-1/2` on `N_A`. The code
+uses the negative sign.
+
+Appendix A is a convention trap rather than a confirmed typo. For
+super-extremal data, GP switch to "extremal gauge": the initial-leg radius is
+the extremal reference radius, while the corner lapse is normalized with the
+super-extremal `Q0` through Eq. (A4). Our initializer follows this by setting
+`r_U=-1/2`, `f_code=2 f_GP`, and `f_code(U0,V0)` from the Hawking-mass
+normalization. The statement that pure ingoing data allow the metric on `N_A`
+to be exact RN should therefore be read as a gauge-fixed characteristic
+construction, not as permission to replace the `N_A` data with subextremal
+MRT-gauge RN formulae.
+
+`examples/diagnose_gp2026_initial_data.jl` is the corresponding executable
+check. It separates the two possible readings of `r_V` on `N_A`. With
+`Q0=1.0033218`, `A0=0.01`, and `eQ0=0.6`, using the mass-compatible RN value
+`r_V=f F_Q(r)/2` gives `max |M-M0|=2.22e-16`. Using the tempting but wrong
+extremal-reference value `r_V=F_ext(r)/2` away from the corner gives
+`max |M-M0|=2.60e-2`. The same script checks the pulse leg `N_B`; at
+`Delta V=0.16, 0.08, 0.04`, the residuals
+`max |Q_V+r^2J_V/8|` are `4.94e-7`, `1.23e-7`, `3.09e-8`, and the log-lapse
+constraint residuals are `7.81e-6`, `1.95e-6`, `5.81e-7`. Thus the initial
+data currently look internally consistent to the expected finite-difference
+order, and the missing trapped-surface crossing is unlikely to be fixed by a
+simple Appendix-A normalization change.
+
 ## Current Implemented System
 
 There are now two implementation tracks.
