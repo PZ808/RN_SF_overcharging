@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="560" viewBox="0 0 920 560">
+<rect width="100%" height="100%" fill="white"/>
+<text x="460.0" y="30" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="600">GP2026 Fixed-rho Throat Boundary Convergence</text>
+<rect x="82.0" y="60.0" width="623.0" height="426.0" fill="#fafafa" stroke="#222" stroke-width="1"/>
+<line x1="82.0" y1="60.0" x2="82.0" y2="486.0" stroke="#ddd" stroke-width="1"/>
+<text x="82.0" y="510.0" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12">0.033</text>
+<line x1="393.4999999999999" y1="60.0" x2="393.4999999999999" y2="486.0" stroke="#ddd" stroke-width="1"/>
+<text x="393.4999999999999" y="510.0" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12">0.057</text>
+<line x1="705.0" y1="60.0" x2="705.0" y2="486.0" stroke="#ddd" stroke-width="1"/>
+<text x="705.0" y="510.0" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12">0.096</text>
+<line x1="82.0" y1="388.10392710217513" x2="705.0" y2="388.10392710217513" stroke="#ddd" stroke-width="1"/>
+<text x="72.0" y="392.10392710217513" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="12">1.0e-05</text>
+<line x1="82.0" y1="278.53125739653035" x2="705.0" y2="278.53125739653035" stroke="#ddd" stroke-width="1"/>
+<text x="72.0" y="282.53125739653035" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="12">1.0e-04</text>
+<line x1="82.0" y1="168.95858769088557" x2="705.0" y2="168.95858769088557" stroke="#ddd" stroke-width="1"/>
+<text x="72.0" y="172.95858769088557" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="12">1.0e-03</text>
+<polyline points="597.619,68.676 189.381,130.148" fill="none" stroke="#1f77b4" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="597.619,411.355 189.381,462.336" fill="none" stroke="#d62728" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="597.619,419.215 189.381,470.326" fill="none" stroke="#2ca02c" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="597.619,369.287 189.381,435.503" fill="none" stroke="#9467bd" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="597.619,411.355 189.381,477.324" fill="none" stroke="#17becf" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="393.5" y="540" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="14">coarse Delta V</text>
+<text x="20" y="273.0" text-anchor="middle" transform="rotate(-90 20 273.0)" font-family="Helvetica, Arial, sans-serif" font-size="14">coarse-fine max difference</text>
+<line x1="729.0" y1="80.0" x2="753.0" y2="80.0" stroke="#1f77b4" stroke-width="3"/>
+<text x="761.0" y="84.0" font-family="Helvetica, Arial, sans-serif" font-size="13">V(rho=2)</text>
+<line x1="729.0" y1="104.0" x2="753.0" y2="104.0" stroke="#d62728" stroke-width="3"/>
+<text x="761.0" y="108.0" font-family="Helvetica, Arial, sans-serif" font-size="13">r(rho=2)</text>
+<line x1="729.0" y1="128.0" x2="753.0" y2="128.0" stroke="#2ca02c" stroke-width="3"/>
+<text x="761.0" y="132.0" font-family="Helvetica, Arial, sans-serif" font-size="13">Q(rho=2)</text>
+<line x1="729.0" y1="152.0" x2="753.0" y2="152.0" stroke="#9467bd" stroke-width="3"/>
+<text x="761.0" y="156.0" font-family="Helvetica, Arial, sans-serif" font-size="13">|r phi|(rho=2)</text>
+<line x1="729.0" y1="176.0" x2="753.0" y2="176.0" stroke="#17becf" stroke-width="3"/>
+<text x="761.0" y="180.0" font-family="Helvetica, Arial, sans-serif" font-size="13">O(h^2)</text>
+</svg>
