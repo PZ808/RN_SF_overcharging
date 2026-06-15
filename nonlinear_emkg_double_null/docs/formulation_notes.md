@@ -93,6 +93,24 @@ data currently look internally consistent to the expected finite-difference
 order, and the missing trapped-surface crossing is unlikely to be fixed by a
 simple Appendix-A normalization change.
 
+`cell_equation_residual_summary` and
+`examples/check_gp2026_cell_residuals.jl` audit the evolved rectangular-cell
+equations directly. On the GP2026 production branch
+(`Q0=1.0033218`, `A0=0.01`, `eQ0=0.6`, `U in [-1,-0.8]`, `V in [0,20]`,
+hyperbolic charge update), the implemented centered equations close at the
+solver/roundoff level: at `Delta U=0.01`, `Delta V=0.08`,
+`max |r_UV-RHS|=1.66e-12`, `max |logf_UV-RHS|=9.27e-13`,
+`max |Psi_UV-RHS|=2.83e-14`, `max |Q_UV-RHS|=4.16e-13`, and the Lorenz/Faraday
+potential residuals are below `3e-15`. The unevolved charge constraints
+remain finite-difference diagnostics and converge at second order:
+`max |Q_U-source|` goes `2.52e-6 -> 6.34e-7 -> 1.59e-7 -> 3.98e-8`, while
+`max |Q_V-source|` goes `1.68e-6 -> 4.21e-7 -> 1.05e-7 -> 2.63e-8`.
+The negative-control metric variants remain large: the literal printed GP
+Eq. (4) conversion gives `O(1.9e-1)`, and an extra Coulomb factor gives
+`O(2.6e-1)`. This pushes the missing trapped-surface crossing away from a
+local cell-equation sign/factor error and toward global/gauge/discretization
+issues in the stiff throat evolution.
+
 ## Current Implemented System
 
 There are now two implementation tracks.
@@ -765,15 +783,19 @@ and are not future trapped (`r_U` and `r_V` are both positive there).
 To make the near-horizon throat explicit, the row diagnostics now include
 
 ```text
-y = r - |Q|,        rho = -log(y/|Q|).
+y = r - |Q|,
+rho = -log(y/|Q|),
+eta = 1 - |Q|/r,
+zeta = |Q|/y.
 ```
 
 `rho` is a stretched extremal-throat coordinate: large `rho` means the row is
-close to the would-be AdS2/JT region. The optional `step_control=:throat`
-limits row-to-row changes in this coordinate, while the default `:local`
-controller takes the minimum of the largest-`f`, geometric-`r`, and
-throat-`rho` limits. The same diagnostic reports a matching candidate and
-the full band where `rho >= rho_match`; for the coarse `Vmax=100`,
+close to the would-be AdS2/JT region. `eta` is a bounded rational throat
+distance, while `zeta` is the direct reciprocal distance. The optional
+`step_control=:throat` limits row-to-row changes in `rho`, while the default
+`:local` controller takes the minimum of the largest-`f`, geometric-`r`, and
+throat-`rho` limits. The same diagnostic reports a matching candidate and the
+full band where `rho >= rho_match`; for the coarse `Vmax=100`,
 `Delta V=0.08`, `C=0.6` run at the 1000-row cap, `rho_match=2` gives a band
 from `V=0` to `V=4.88`, with `max rho=2.33`. This is the data needed for a
 future matched full-system plus near-AdS2/JT patch: choose a `rho=rho_match`
@@ -852,6 +874,50 @@ the full-row transformed range is worse. The important signal is instead
 the violent behavior is an unresolved throat-coordinate gradient. A simple
 post-processing coordinate change does not tame it; a real `rho`-adapted mesh
 or matched near-horizon patch is needed.
+
+`examples/check_gp2026_throat_stiffness_scaling.jl` is the second-generation
+stiffness diagnostic. It evolves the row system, samples the minimum-`r_V`
+point, and reports `rho`, `H`, `logf_rho`, row-to-row changes, candidate step
+limits, and local one-step versus two-half-step probes. In the default
+`Q0=1.0033218`, `Vmax=400`, `Delta V=0.08`, `max_rows=1200` run with
+`step_control=:outer` and `substep_control=:local`, the local stiffness grows
+rapidly as the throat layer is approached. The max-norm row derivative of the
+throat coordinate increases from `rho_U_inf=1.22` near row 2 to `1.04e3` by
+row 1200, and `logf_rho_U_inf` increases from `1.48` to `9.88e2`. The GP
+outer step stays about `25` times larger than the geometric local cap in the
+tail: at row 1200,
+
+```text
+Delta U_outer = 1.37e-4,
+Delta U_geometric = 5.41e-6,
+Delta U_throat = 2.41e-4.
+```
+
+A local probe that advances the final row by one GP outer step and compares it
+to two half steps remains finite, but it produces
+`max |Delta r|=5.36e-4`, `max |Delta logf|=3.04e-4`,
+`max |Delta rho|=6.68e-5`, `max |Delta logf_rho|=3.00e-4`, and
+`max |Delta H|=4.82e-4`. Thus the stiff layer is not primarily a Picard
+nonconvergence: it is a variable/mesh conditioning problem where invariant or
+near-throat variables change more gently than raw metric fields, but the GP
+outer step is still far outside the local geometric resolution scale.
+
+The same diagnostic now compares `rho` with two rational throat variables:
+
+```text
+eta = 1 - |Q|/r = (r-|Q|)/r,
+zeta = |Q|/(r-|Q|).
+```
+
+Here `eta` is the useful compact rational coordinate. In the default run at
+row 1200 it gives `eta_U_inf=2.59e2`, compared with `rho_U_inf=1.04e3`,
+while the direct reciprocal gives `zeta_U_inf=1.73e3`. The one-step versus
+two-half-step probe shows the same ordering:
+`max |Delta eta|=1.65e-5`, `max |Delta rho|=6.68e-5`, and
+`max |Delta zeta|=6.50e-5`. The direct inverse is therefore not a good
+marching coordinate by itself; the bounded rational distance `eta`, or a
+closely related compactified near-horizon coordinate, is the more promising
+candidate for a throat-adapted mesh.
 
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time

@@ -180,6 +180,35 @@ end
     @test maximum(abs, q_v_residual) < 1.2e-5
 end
 
+@testset "GP2026 centered cell residuals" begin
+    q0 = 1.0033218
+    ep = EvolutionParams(rn=RNParams(1.0, q0), scalar_charge=0.6 / q0,
+                         amplitude=0.01, omega=1.0)
+    grid = gp2026_grid(; nu=11, nv=101, U0=-1.0, V0=0.0,
+                       U1=-0.9, V1=20.0)
+    state = NLState(grid)
+    initialize_gp2026_single_pulse!(state, grid, ep)
+    evolve_nonlinear!(state, grid, ep; iterations=10, reduced_scalar=true,
+                      hyperbolic_charge=true)
+    summary = cell_equation_residual_summary(
+        state, grid, ep; reduced_scalar=true, hyperbolic_charge=true,
+    )
+    @test summary.cells == (length(grid.u) - 1) * (length(grid.v) - 1)
+    @test summary.max_abs_r_uv < 1.0e-10
+    @test summary.max_abs_logf_uv < 1.0e-10
+    @test summary.max_abs_psi_re_uv < 1.0e-11
+    @test summary.max_abs_psi_im_uv < 1.0e-11
+    @test summary.max_abs_q_uv < 1.0e-10
+    @test summary.max_abs_au_v < 1.0e-12
+    @test summary.max_abs_av_u < 1.0e-12
+    @test summary.max_abs_quasilorenz < 1.0e-12
+    @test summary.max_abs_faraday < 1.0e-12
+    @test summary.max_abs_q_u_constraint < 2.0e-5
+    @test summary.max_abs_q_v_constraint < 2.0e-5
+    @test summary.max_abs_logf_gp_literal > 1.0e-2
+    @test summary.max_abs_logf_coulomb2 > 1.0e-2
+end
+
 @testset "GP2026 U-step evolution" begin
     q0 = 1.0033218
     ep = EvolutionParams(rn=RNParams(1.0, q0), scalar_charge=0.6 / q0,
@@ -231,8 +260,16 @@ end
     @test length(throat.y) == length(grid.v)
     @test all(>(0), throat.y)
     @test all(isfinite, throat.rho)
+    @test length(throat.eta) == length(grid.v)
+    @test length(throat.zeta) == length(grid.v)
+    @test all(isfinite, throat.eta)
+    @test all(isfinite, throat.zeta)
+    @test all(>=(0), throat.eta)
+    @test all(>(0), throat.zeta)
     @test throat.max_rho == maximum(throat.rho)
     @test throat.max_abs_delta_rho >= 0
+    @test throat.max_abs_delta_eta >= 0
+    @test throat.max_abs_delta_zeta >= 0
     match = throat_matching_candidate(last(evolved.rows); rho_min=0.0)
     @test !isnothing(match)
     @test match.index == firstindex(last(evolved.rows).v)

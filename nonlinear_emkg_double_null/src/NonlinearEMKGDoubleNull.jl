@@ -56,6 +56,7 @@ export row_outgoing_expansion, row_expansion_minimum, row_apparent_horizon_cross
 export vtrap_diagnostic
 export gp2026_rphi_profile, gp2026_horizon_rphi_series
 export ThroatBoundaryObservables, throat_boundary_observables
+export cell_equation_residual_summary
 export horizon_charge_density_series, conformal_weight_s
 export rstar, areal_radius, metric_F, metric_f, metric_ftilde, radius_from_rstar, compact_v_from_ef_v
 

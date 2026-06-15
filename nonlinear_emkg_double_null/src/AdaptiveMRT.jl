@@ -49,10 +49,14 @@ end
 struct ThroatRowDiagnostics{T<:Real}
     y::Vector{T}
     rho::Vector{T}
+    eta::Vector{T}
+    zeta::Vector{T}
     qabs::Vector{T}
     min_y::T
     max_rho::T
     max_abs_delta_rho::T
+    max_abs_delta_eta::T
+    max_abs_delta_zeta::T
 end
 
 struct ThroatMatchCandidate{T<:Real}
@@ -328,9 +332,14 @@ function throat_row_diagnostics(row::NLRow; charge_floor=nothing,
     qabs = [max(abs(q), qfloor) for q in row.Q]
     y = [max(row.r[j] - qabs[j], yfloor * qabs[j]) for j in eachindex(row.r)]
     rho = [-log(y[j] / qabs[j]) for j in eachindex(y)]
+    eta = [y[j] / row.r[j] for j in eachindex(y)]
+    zeta = [qabs[j] / y[j] for j in eachindex(y)]
     max_abs_delta_rho = length(rho) <= 1 ? zero(eltype(rho)) : maximum(abs, diff(rho))
-    return ThroatRowDiagnostics(y, rho, qabs, minimum(y), maximum(rho),
-                                max_abs_delta_rho)
+    max_abs_delta_eta = length(eta) <= 1 ? zero(eltype(eta)) : maximum(abs, diff(eta))
+    max_abs_delta_zeta = length(zeta) <= 1 ? zero(eltype(zeta)) : maximum(abs, diff(zeta))
+    return ThroatRowDiagnostics(y, rho, eta, zeta, qabs, minimum(y),
+                                maximum(rho), max_abs_delta_rho,
+                                max_abs_delta_eta, max_abs_delta_zeta)
 end
 
 function throat_matching_candidate(row::NLRow; rho_min=2.0, charge_floor=nothing,

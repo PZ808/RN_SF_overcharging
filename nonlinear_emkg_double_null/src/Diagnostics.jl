@@ -688,6 +688,186 @@ function throat_boundary_observables(sample::ThroatBoundarySample,
     )
 end
 
+function checked_grid_size(st::NLState, g::Grid)
+    size(st.r) == size(st.logf) == size(st.phi_re) == size(st.phi_im) ==
+        size(st.Au) == size(st.Av) == size(st.Q) == size(g) ||
+        throw(ArgumentError("state field sizes must match the grid"))
+    return size(g)
+end
+
+finite_abs(value) = isfinite(value) ? abs(value) : typeof(value)(Inf)
+
+"""
+Summarize centered-cell residuals for the fully nonlinear EMKG equations.
+
+The residuals are evaluated on an already evolved rectangular `NLState`, using
+the same corner averages and centered derivatives as `step_nonlinear_cell!`.
+Set `reduced_scalar=true` for the GP2026 production branch, where
+`phi_re/phi_im` store `Psi=sqrt(32*pi)*r*phi_GP`. The two `logf` variants are
+negative controls for the most plausible paper-copying mistakes:
+
+* `max_abs_logf_gp_literal` uses the literal printed GP Eq. (4) coefficient
+  after converting to `f_code=2f_GP`.
+* `max_abs_logf_coulomb2` uses an extra factor of two in the Coulomb term.
+
+The `Q_UV` residual is meaningful for the GP2026 production mode
+`hyperbolic_charge=true`; in constraint-marched runs it is just measured
+against zero.
+"""
+function cell_equation_residual_summary(st::NLState, g::Grid,
+                                        ep::EvolutionParams;
+                                        reduced_scalar::Bool=false,
+                                        hyperbolic_charge::Bool=false,
+                                        subtract_rn_background::Bool=false,
+                                        interior_only::Bool=false)
+    hyperbolic_charge && !reduced_scalar &&
+        throw(ArgumentError("hyperbolic charge residual requires reduced_scalar=true"))
+    nu, nv = checked_grid_size(st, g)
+    nu >= 2 && nv >= 2 ||
+        throw(ArgumentError("cell residuals need at least one cell"))
+
+    i_range = if interior_only && nu > 3
+        2:(nu - 2)
+    else
+        1:(nu - 1)
+    end
+    j_range = if interior_only && nv > 3
+        2:(nv - 2)
+    else
+        1:(nv - 1)
+    end
+    T = promote_type(eltype(g.u), eltype(g.v), eltype(st.r),
+                     typeof(ep.scalar_charge))
+    maxima = Dict{Symbol,T}(
+        :r_uv => zero(T),
+        :logf_uv => zero(T),
+        :logf_gp_literal => zero(T),
+        :logf_coulomb2 => zero(T),
+        :psi_re_uv => zero(T),
+        :psi_im_uv => zero(T),
+        :q_uv => zero(T),
+        :q_u_constraint => zero(T),
+        :q_v_constraint => zero(T),
+        :au_v => zero(T),
+        :av_u => zero(T),
+        :quasilorenz => zero(T),
+        :faraday => zero(T),
+    )
+
+    function update!(key, value)
+        maxima[key] = max(maxima[key], convert(T, finite_abs(value)))
+    end
+
+    cells = 0
+    e = ep.scalar_charge
+    for i in i_range, j in j_range
+        du = g.u[i + 1] - g.u[i]
+        dv = g.v[j + 1] - g.v[j]
+        r00, r10, r01, r11 = st.r[i, j], st.r[i + 1, j],
+                              st.r[i, j + 1], st.r[i + 1, j + 1]
+        lf00, lf10, lf01, lf11 = st.logf[i, j], st.logf[i + 1, j],
+                                  st.logf[i, j + 1], st.logf[i + 1, j + 1]
+        pr00, pr10, pr01, pr11 = st.phi_re[i, j], st.phi_re[i + 1, j],
+                                  st.phi_re[i, j + 1], st.phi_re[i + 1, j + 1]
+        pi00, pi10, pi01, pi11 = st.phi_im[i, j], st.phi_im[i + 1, j],
+                                  st.phi_im[i, j + 1], st.phi_im[i + 1, j + 1]
+        au00, au10, au01, au11 = st.Au[i, j], st.Au[i + 1, j],
+                                  st.Au[i, j + 1], st.Au[i + 1, j + 1]
+        av00, av10, av01, av11 = st.Av[i, j], st.Av[i + 1, j],
+                                  st.Av[i, j + 1], st.Av[i + 1, j + 1]
+        q00, q10, q01, q11 = st.Q[i, j], st.Q[i + 1, j],
+                              st.Q[i, j + 1], st.Q[i + 1, j + 1]
+
+        r = corner_average(r00, r10, r01, r11)
+        lf = corner_average(lf00, lf10, lf01, lf11)
+        f = exp(lf)
+        pr = corner_average(pr00, pr10, pr01, pr11)
+        pii = corner_average(pi00, pi10, pi01, pi11)
+        au = corner_average(au00, au10, au01, au11)
+        av = corner_average(av00, av10, av01, av11)
+        q = corner_average(q00, q10, q01, q11)
+
+        ru = corner_du(r00, r10, r01, r11, du)
+        rv = corner_dv(r00, r10, r01, r11, dv)
+        pru = corner_du(pr00, pr10, pr01, pr11, du)
+        prv = corner_dv(pr00, pr10, pr01, pr11, dv)
+        piu = corner_du(pi00, pi10, pi01, pi11, du)
+        piv = corner_dv(pi00, pi10, pi01, pi11, dv)
+        au_v = corner_dv(au00, au10, au01, au11, dv)
+        av_u = corner_du(av00, av10, av01, av11, du)
+        q_u = corner_du(q00, q10, q01, q11, du)
+        q_v = corner_dv(q00, q10, q01, q11, dv)
+
+        source = if reduced_scalar
+            stress_energy_reduced_scalar(r, f, q, ru, rv, pr, pii, pru, prv,
+                                         piu, piv, au, av, e)
+        else
+            stress_energy(r, f, q, pr, pii, pru, prv, piu, piv, au, av, e)
+        end
+        ruv, lfuv = metric_rhs(r, f, ru, rv, q, source)
+        pruv, piuv = if reduced_scalar
+            charged_reduced_scalar_rhs(r, ruv, pru, prv, piu, piv,
+                                       pr, pii, au, av, e)
+        else
+            charged_scalar_rhs(r, ru, rv, pru, prv, piu, piv,
+                               pr, pii, au, av, e)
+        end
+        auv, avu, _, q_u_source, q_v_source = maxwell_rhs(r, f, q, source)
+        quv = reduced_scalar && hyperbolic_charge ?
+              charged_reduced_charge_rhs(r, f, q, pr, pii, pru, prv,
+                                         piu, piv, au, av, e) :
+              zero(q)
+
+        r_defect, lf_defect = subtract_rn_background ?
+                               rn_background_update_defect(g, ep, i, j, du, dv) :
+                               (zero(du), zero(du))
+        ruv_observed = (r11 - r10 - r01 + r00) / (du * dv)
+        lfuv_observed = (lf11 - lf10 - lf01 + lf00) / (du * dv)
+        pruv_observed = (pr11 - pr10 - pr01 + pr00) / (du * dv)
+        piuv_observed = (pi11 - pi10 - pi01 + pi00) / (du * dv)
+        quv_observed = (q11 - q10 - q01 + q00) / (du * dv)
+
+        lfuv_gp_literal = f / (4r^2) + 2 * ru * rv / r^2 -
+                           q^2 * f / r^4 - source.scalar_logf_source
+        lfuv_coulomb2 = f / (2r^2) + 2 * ru * rv / r^2 -
+                        2 * q^2 * f / r^4 - source.scalar_logf_source
+
+        update!(:r_uv, ruv_observed - ruv + r_defect / (du * dv))
+        update!(:logf_uv, lfuv_observed - lfuv + lf_defect / (du * dv))
+        update!(:logf_gp_literal,
+                lfuv_observed - lfuv_gp_literal + lf_defect / (du * dv))
+        update!(:logf_coulomb2,
+                lfuv_observed - lfuv_coulomb2 + lf_defect / (du * dv))
+        update!(:psi_re_uv, pruv_observed - pruv)
+        update!(:psi_im_uv, piuv_observed - piuv)
+        update!(:q_uv, quv_observed - quv)
+        update!(:q_u_constraint, q_u - q_u_source)
+        update!(:q_v_constraint, q_v - q_v_source)
+        update!(:au_v, au_v - auv)
+        update!(:av_u, av_u - avu)
+        update!(:quasilorenz, au_v + av_u)
+        update!(:faraday, av_u - au_v + q * f / (2r^2))
+        cells += 1
+    end
+
+    return (
+        cells=cells,
+        max_abs_r_uv=maxima[:r_uv],
+        max_abs_logf_uv=maxima[:logf_uv],
+        max_abs_logf_gp_literal=maxima[:logf_gp_literal],
+        max_abs_logf_coulomb2=maxima[:logf_coulomb2],
+        max_abs_psi_re_uv=maxima[:psi_re_uv],
+        max_abs_psi_im_uv=maxima[:psi_im_uv],
+        max_abs_q_uv=maxima[:q_uv],
+        max_abs_q_u_constraint=maxima[:q_u_constraint],
+        max_abs_q_v_constraint=maxima[:q_v_constraint],
+        max_abs_au_v=maxima[:au_v],
+        max_abs_av_u=maxima[:av_u],
+        max_abs_quasilorenz=maxima[:quasilorenz],
+        max_abs_faraday=maxima[:faraday],
+    )
+end
+
 function fit_power_law(x, y; xmin=nothing, xmax=nothing)
     idx = trues(length(x))
     if xmin !== nothing
