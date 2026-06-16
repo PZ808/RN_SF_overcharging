@@ -14,12 +14,13 @@ end
 
 function step_control_argument(index, default)
     value = argument(index, default)
-    value in ("outer", "max-row", "geometric", "throat", "local") ||
-        throw(ArgumentError("step control must be outer, max-row, geometric, throat, or local"))
+    value in ("outer", "max-row", "geometric", "throat", "eta", "local") ||
+        throw(ArgumentError("step control must be outer, max-row, geometric, throat, eta, or local"))
     return value == "outer" ? :outer :
            value == "max-row" ? :max_row :
            value == "geometric" ? :geometric :
            value == "throat" ? :throat :
+           value == "eta" ? :eta :
            :local
 end
 
@@ -100,6 +101,7 @@ function main()
     step_control = step_control_argument(9, "outer")
     stride = integer_argument(10, 1)
     max_delta_rho = real_argument(11, 0.25)
+    max_delta_eta = real_argument(12, 0.025)
     stride >= 1 || throw(ArgumentError("stride must be at least 1"))
 
     ep = EvolutionParams(
@@ -115,7 +117,7 @@ function main()
     evolved = evolve_gp2026_u_adaptive(
         row_from_rectangular(seed, grid, 1), ep;
         Umax, C, iterations=10, max_rows, hyperbolic_charge=true,
-        step_control, max_delta_rho,
+        step_control, max_delta_rho, max_delta_eta,
     )
     last_valid = findlast(finite_row, evolved.rows)
     isnothing(last_valid) && error("initial GP row is invalid")
@@ -127,7 +129,9 @@ function main()
             ", A0 = ", amplitude)
     println("# rho_match = ", rho_match, ", Vmax = ", vmax,
             ", Delta V = ", dv, ", C = ", C,
-            ", step_control = ", step_control)
+            ", step_control = ", step_control,
+            ", max_delta_rho = ", max_delta_rho,
+            ", max_delta_eta = ", max_delta_eta)
     println("# valid rows = ", length(rows), ", samples = ", length(samples),
             ", last valid U = ", last(rows).u)
     println("# The stored scalar Psi equals sqrt(32*pi) * r * phi_GP.")

@@ -32,7 +32,8 @@ export ThroatMatchCandidate, ThroatMatchBand, RhoLapseDiagnostics, ThroatBoundar
 export row_from_rectangular, adaptive_state_from_u_rows
 export throat_row_diagnostics, throat_matching_candidate, throat_matching_band
 export rho_lapse_diagnostics, throat_boundary_sample, throat_boundary_series, range_width
-export throat_row_du, geometric_row_du, gp2026_row_step_du
+export throat_row_du, eta_row_du, geometric_row_du, gp2026_row_step_du
+export realized_row_change_summary
 export interpolate_slice, refine_u_grid, refine_slice, truncate_slice
 export refine_slice_constrained
 export spacing_refinement_flags, variation_refinement_flags, point_splitting_flags

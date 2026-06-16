@@ -607,12 +607,17 @@ Delta U = C/f_GP(U,Vmax) = 2C/f_code(U,Vmax).
 ```
 
 The solver keeps that rule available as `step_control=:outer`, but the default
-uses `step_control=:local`, the smaller of `Delta U=2C/max_row(f_code)` and a
-local areal-radius limiter
+uses `step_control=:local`, the minimum of four caps:
+
+- `Delta U=2C/max_row(f_code)`;
+- a local areal-radius limiter
 
 ```text
 |r_U| Delta U <= C |Delta r|.
 ```
+
+- throat-coordinate limiters on row-to-row changes in
+  `rho=-log((r-|Q|)/|Q|)` and `eta=1-|Q|/r`.
 
 This follows the stability logic of Gundlach/Baumgarte/Hilditch
 arXiv:1908.05971, whose double-null method notes that there is no causal
@@ -753,8 +758,9 @@ positive before the run stops or exhausts the row budget.
 The row marcher now supports adaptive substepping inside a selected macro row
 step. For example, `step_control=:outer, substep_control=:local` keeps the
 paper-style Eq. (9) macro target but advances toward it with smaller stored
-rows satisfying the local geometric/throat caps. This substantially changes the
-near-marginal behavior but does not yet reproduce the GP trapped-surface curve.
+rows satisfying the local geometric, `rho`, and `eta` throat caps. This
+substantially changes the near-marginal behavior but does not yet reproduce
+the GP trapped-surface curve.
 For the quoted-critical run with `max_rows=6000`, the closest point is
 `V=144.40`, `r_V=6.13e-6`, `H=1.22e-5`, and `r-r_+=5.33e-5`; for a BH-side
 `Q0=1.0` run it reaches `V=139.04`, `r_V=5.62e-6`, `H=1.12e-5`, and
@@ -792,10 +798,13 @@ zeta = |Q|/y.
 `rho` is a stretched extremal-throat coordinate: large `rho` means the row is
 close to the would-be AdS2/JT region. `eta` is a bounded rational throat
 distance, while `zeta` is the direct reciprocal distance. The optional
-`step_control=:throat` limits row-to-row changes in `rho`, while the default
-`:local` controller takes the minimum of the largest-`f`, geometric-`r`, and
-throat-`rho` limits. The same diagnostic reports a matching candidate and the
-full band where `rho >= rho_match`; for the coarse `Vmax=100`,
+`step_control=:throat` limits row-to-row changes in `rho`, and
+`step_control=:eta` limits row-to-row changes in the compact rational
+coordinate `eta`, capped by the largest-`f` row rule so it remains a
+refinement criterion. The default `:local` controller takes the minimum of the
+largest-`f`, geometric-`r`, throat-`rho`, and throat-`eta` limits. The same
+diagnostic reports a matching candidate and the full band where
+`rho >= rho_match`; for the coarse `Vmax=100`,
 `Delta V=0.08`, `C=0.6` run at the 1000-row cap, `rho_match=2` gives a band
 from `V=0` to `V=4.88`, with `max rho=2.33`. This is the data needed for a
 future matched full-system plus near-AdS2/JT patch: choose a `rho=rho_match`
@@ -918,6 +927,37 @@ two-half-step probe shows the same ordering:
 marching coordinate by itself; the bounded rational distance `eta`, or a
 closely related compactified near-horizon coordinate, is the more promising
 candidate for a throat-adapted mesh.
+
+The first implementation of that idea is an `eta` row-step limiter. It
+estimates `max |partial_U eta|` from the two most recent rows and sets
+`Delta U_eta=max_delta_eta/max |partial_U eta|`, with
+`max_delta_eta=0.025` by default. `step_control=:eta` uses this as a refinement
+cap on top of the largest-`f` row rule, selecting
+`min(Delta U_maxrow, Delta U_eta)`. The conservative `step_control=:local`
+uses the minimum of the largest-`f`, geometric, `rho`, and `eta` caps. A
+short `Vmax=80`, `step_control=:eta` smoke run reaches the requested
+`U=1.6` without a nonfinite row and detects a row-local trapped-surface
+crossing, but the late row is already in a floor-dominated throat/interior
+region where `Delta U_eta` becomes huge and the max-row cap takes over. This
+is useful controller plumbing, not yet a replacement for the conservative
+geometric-plus-throat local controller.
+
+The next semi-implicit step is row rejection with backtracking. Passing
+`backtrack=true` to `evolve_gp2026_u_adaptive` changes a proposed row advance
+from "take the step and inspect it later" to "try the step, measure the
+realized future-row change, and reject it if needed." The accept/reject
+diagnostic is `realized_row_change_summary(rows, candidate)`, which reports
+the actual row-to-row maxima of `r`, `logf`, `rho`, `eta`, and
+`H=-4r_Ur_V/f`. The default backtracking caps are the existing
+`max_delta_rho` and `max_delta_eta`; `r`, `logf`, and `H` caps are available
+but default to `Inf`. A rejected row is retried with
+`Delta U <- backtrack_factor * Delta U`, with `backtrack_factor=0.5` and
+`max_backtracks=20` by default. This is not a full Newton solve for the
+entire row, but it is semi-implicit in the practical sense that the controller
+now depends on the candidate future row instead of only on past-row speed
+estimates. A short `Vmax=40`, `step_control=:outer`, `backtrack=true` smoke
+run with realized caps `Delta rho <= 0.05` and `Delta eta <= 0.02` reaches
+`U=-0.5` with finite rows and 23 accepted rows.
 
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time

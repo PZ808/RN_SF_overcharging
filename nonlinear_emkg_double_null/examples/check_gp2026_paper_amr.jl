@@ -83,6 +83,7 @@ function run_paper_amr(::Type{T}) where {T<:Real}
     println("throat min(r-|Q|) = ", throat.min_y)
     println("throat max rho = ", throat.max_rho)
     println("throat max |Delta rho| = ", throat.max_abs_delta_rho)
+    println("throat max |Delta eta| = ", throat.max_abs_delta_eta)
     println("interpretation = ",
             final.u == Umax ? "reached requested Umax" :
             hit_invalid_row ? "invalid row before clean Eq. 9 accumulation" :

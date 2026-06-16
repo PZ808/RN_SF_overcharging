@@ -16,13 +16,14 @@ end
 
 function step_control_argument(index, default="outer")
     value = argument(index, default)
-    value in ("none", "outer", "max-row", "geometric", "throat", "local") ||
-        throw(ArgumentError("step control must be none, outer, max-row, geometric, throat, or local"))
+    value in ("none", "outer", "max-row", "geometric", "throat", "eta", "local") ||
+        throw(ArgumentError("step control must be none, outer, max-row, geometric, throat, eta, or local"))
     value == "none" && return :none
     return value == "outer" ? :outer :
            value == "max-row" ? :max_row :
            value == "geometric" ? :geometric :
            value == "throat" ? :throat :
+           value == "eta" ? :eta :
            :local
 end
 
@@ -220,6 +221,7 @@ function run_analysis(::Type{T}) where {T<:Real}
     max_substeps_per_row = integer_argument(13, 10_000)
     tail_fit_count = integer_argument(14, 200)
     precision_bits = integer_argument(15, 0)
+    max_delta_eta = real_argument(16, "0.025", T)
 
     U0 = parse(T, "-1.0")
     ep = EvolutionParams(
@@ -238,6 +240,7 @@ function run_analysis(::Type{T}) where {T<:Real}
                                        iterations=10, max_rows,
                                        hyperbolic_charge=true,
                                        step_control, max_delta_rho,
+                                       max_delta_eta,
                                        substep_control, substep_C,
                                        max_substeps_per_row)
     last_valid = findlast(finite_row, evolved.rows)
@@ -276,6 +279,8 @@ function run_analysis(::Type{T}) where {T<:Real}
             ", step_control = ", step_control,
             ", substep_control = ", substep_control,
             ", substep_C = ", substep_C,
+            ", max_delta_rho = ", max_delta_rho,
+            ", max_delta_eta = ", max_delta_eta,
             ", max rows = ", max_rows)
     println("# valid rows = ", length(rows), ", last U = ", last(rows).u,
             ", Vtrap status = ", vtrap.status, ", direct trap = ", vtrap.trap)

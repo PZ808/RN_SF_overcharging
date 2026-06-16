@@ -10,6 +10,13 @@ function integer_argument(index, default)
     return length(ARGS) >= index ? parse(Int, ARGS[index]) : default
 end
 
+function boolean_argument(index, default)
+    value = lowercase(length(ARGS) >= index ? ARGS[index] : string(default))
+    value in ("true", "t", "1", "yes", "y", "on") && return true
+    value in ("false", "f", "0", "no", "n", "off") && return false
+    throw(ArgumentError("boolean argument must be true or false"))
+end
+
 function first_trapped_slice(state)
     for j in 2:length(state.slices)
         rv = adaptive_outgoing_expansion(state.slices[j - 1], state.slices[j])
@@ -32,8 +39,8 @@ function run_comparison(::Type{T}) where {T<:Real}
     charge_mode in ("hyperbolic", "constraint") ||
         throw(ArgumentError("charge mode must be hyperbolic or constraint"))
     step_control_argument = length(ARGS) >= 10 ? ARGS[10] : "local"
-    step_control_argument in ("outer", "max-row", "geometric", "throat", "local") ||
-        throw(ArgumentError("step control must be outer, max-row, geometric, throat, or local"))
+    step_control_argument in ("outer", "max-row", "geometric", "throat", "eta", "local") ||
+        throw(ArgumentError("step control must be outer, max-row, geometric, throat, eta, or local"))
     step_control = if step_control_argument == "outer"
         :outer
     elseif step_control_argument == "max-row"
@@ -42,14 +49,16 @@ function run_comparison(::Type{T}) where {T<:Real}
         :geometric
     elseif step_control_argument == "throat"
         :throat
+    elseif step_control_argument == "eta"
+        :eta
     else
         :local
     end
     max_delta_rho = real_argument(11, "0.25", T)
     match_rho = real_argument(12, "2.0", T)
     substep_control_argument = length(ARGS) >= 13 ? ARGS[13] : "none"
-    substep_control_argument in ("none", "outer", "max-row", "geometric", "throat", "local") ||
-        throw(ArgumentError("substep control must be none, outer, max-row, geometric, throat, or local"))
+    substep_control_argument in ("none", "outer", "max-row", "geometric", "throat", "eta", "local") ||
+        throw(ArgumentError("substep control must be none, outer, max-row, geometric, throat, eta, or local"))
     substep_control = if substep_control_argument == "none"
         :none
     elseif substep_control_argument == "outer"
@@ -60,11 +69,20 @@ function run_comparison(::Type{T}) where {T<:Real}
         :geometric
     elseif substep_control_argument == "throat"
         :throat
+    elseif substep_control_argument == "eta"
+        :eta
     else
         :local
     end
     substep_C = real_argument(14, string(C), T)
     max_substeps_per_row = integer_argument(15, 10_000)
+    max_delta_eta = real_argument(16, "0.025", T)
+    backtrack = boolean_argument(17, false)
+    backtrack_factor = real_argument(18, "0.5", T)
+    max_backtracks = integer_argument(19, 20)
+    max_realized_delta_rho = real_argument(20, string(max_delta_rho), T)
+    max_realized_delta_eta = real_argument(21, string(max_delta_eta), T)
+    max_realized_delta_H = real_argument(22, "Inf", T)
 
     U0 = parse(T, "-1.0")
     ep = EvolutionParams(
@@ -81,8 +99,12 @@ function run_comparison(::Type{T}) where {T<:Real}
     initial = row_from_rectangular(seed, grid, 1)
     raw = evolve_gp2026_u_adaptive(initial, ep; Umax, C, iterations=10, max_rows,
                                    hyperbolic_charge, step_control, max_delta_rho,
-                                   substep_control, substep_C,
-                                   max_substeps_per_row)
+                                   max_delta_eta, substep_control, substep_C,
+                                   max_substeps_per_row, backtrack,
+                                   backtrack_factor, max_backtracks,
+                                   max_realized_delta_rho,
+                                   max_realized_delta_eta,
+                                   max_realized_delta_H)
 
     last_valid = findlast(row -> all(isfinite, row.r) && all(isfinite, row.logf) &&
                                   all(isfinite, row.phi_re) && all(isfinite, row.phi_im) &&
@@ -97,11 +119,13 @@ function run_comparison(::Type{T}) where {T<:Real}
     trap = length(valid_rows.rows) >= 2 ? first_trapped_slice(state) : nothing
     last_fcode = exp(last(final_row.logf))
     max_fcode = exp(maximum(final_row.logf))
-    next_du_info = gp2026_row_step_du(valid_rows.rows, C, step_control; max_delta_rho)
+    next_du_info = gp2026_row_step_du(valid_rows.rows, C, step_control;
+                                      max_delta_rho, max_delta_eta)
     next_paper_du = next_du_info.outer_du
     next_max_row_du = next_du_info.max_row_du
     next_geometric_du = next_du_info.geometric_du
     next_throat_du = next_du_info.throat_du
+    next_eta_du = next_du_info.eta_du
     next_controlled_du = next_du_info.selected
     hit_invalid_row = last_valid < length(raw.rows)
     coordinate_stalled = final_row.u + next_controlled_du == final_row.u
@@ -122,12 +146,19 @@ function run_comparison(::Type{T}) where {T<:Real}
     println("Delta V = ", dv)
     println("C = ", C)
     println("max Delta rho = ", max_delta_rho)
+    println("max Delta eta = ", max_delta_eta)
     println("matching rho = ", match_rho)
     println("charge evolution = ", charge_mode)
     println("step control = ", step_control_argument)
     println("substep control = ", substep_control_argument)
     println("substep C = ", substep_C)
     println("max substeps per row = ", max_substeps_per_row)
+    println("backtrack = ", backtrack)
+    println("backtrack factor = ", backtrack_factor)
+    println("max backtracks = ", max_backtracks)
+    println("max realized Delta rho = ", max_realized_delta_rho)
+    println("max realized Delta eta = ", max_realized_delta_eta)
+    println("max realized Delta H = ", max_realized_delta_H)
     println("requested Umax = ", Umax)
     println("stored U rows = ", length(raw.rows))
     println("valid U rows = ", length(valid_rows.rows))
@@ -142,6 +173,7 @@ function run_comparison(::Type{T}) where {T<:Real}
     println("next max-row Delta U = ", next_max_row_du)
     println("next geometric Delta U = ", next_geometric_du)
     println("next throat Delta U = ", next_throat_du)
+    println("next eta Delta U = ", next_eta_du)
     println("next controlled Delta U = ", next_controlled_du)
     println("Vtrap status = ", vtrap.status)
     println("direct Vtrap sample = ", vtrap.trap)
@@ -151,6 +183,7 @@ function run_comparison(::Type{T}) where {T<:Real}
     println("throat min(r-|Q|) = ", throat.min_y)
     println("throat max rho = ", throat.max_rho)
     println("throat max |Delta rho| = ", throat.max_abs_delta_rho)
+    println("throat max |Delta eta| = ", throat.max_abs_delta_eta)
     match = throat_matching_candidate(final_row; rho_min=match_rho)
     println("throat matching candidate = ", match)
     println("throat matching band = ", throat_matching_band(final_row; rho_min=match_rho))

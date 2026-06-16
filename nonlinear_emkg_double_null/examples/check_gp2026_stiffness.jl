@@ -20,12 +20,13 @@ end
 
 function step_control_argument(index)
     value = argument(index, "outer")
-    value in ("outer", "max-row", "geometric", "throat", "local") ||
-        throw(ArgumentError("step control must be outer, max-row, geometric, throat, or local"))
+    value in ("outer", "max-row", "geometric", "throat", "eta", "local") ||
+        throw(ArgumentError("step control must be outer, max-row, geometric, throat, eta, or local"))
     return value == "outer" ? :outer :
            value == "max-row" ? :max_row :
            value == "geometric" ? :geometric :
            value == "throat" ? :throat :
+           value == "eta" ? :eta :
            :local
 end
 
@@ -87,26 +88,6 @@ function row_summary(row::NLRow, ep::EvolutionParams)
     )
 end
 
-function controlled_du(rows, C, step_control, max_delta_rho)
-    current = last(rows)
-    outer_du = 2C / exp(last(current.logf))
-    max_row_du = 2C / exp(maximum(current.logf))
-    geometric_du = geometric_row_du(rows, C)
-    throat_du = throat_row_du(rows, C; max_delta_rho)
-    selected = if step_control === :outer
-        outer_du
-    elseif step_control === :max_row
-        max_row_du
-    elseif step_control === :geometric
-        isfinite(geometric_du) ? geometric_du : max_row_du
-    elseif step_control === :throat
-        isfinite(throat_du) ? throat_du : max_row_du
-    else
-        minimum((max_row_du, geometric_du, throat_du))
-    end
-    return (; selected, outer_du, max_row_du, geometric_du, throat_du)
-end
-
 function advance_to_target(base::NLRow, target_u, ep::EvolutionParams;
                            pieces::Int, iterations::Int, hyperbolic_charge::Bool,
                            U0, V0, M0)
@@ -155,6 +136,7 @@ function run_stiffness(::Type{T}) where {T<:Real}
     iterations_list = integer_list_argument(11, "1,2,4,8,16")
     reference_iterations = integer_argument(12, 20)
     precision_bits = integer_argument(13, 0)
+    max_delta_eta = real_argument(14, "0.025", T)
 
     U0 = parse(T, "-1.0")
     Umax = parse(T, "1.6")
@@ -176,12 +158,14 @@ function run_stiffness(::Type{T}) where {T<:Real}
                                        max_rows=base_rows,
                                        hyperbolic_charge=true,
                                        step_control,
-                                       max_delta_rho)
+                                       max_delta_rho,
+                                       max_delta_eta)
     last_valid = findlast(finite_row, evolved.rows)
     isnothing(last_valid) && error("initial GP row is invalid")
     rows = evolved.rows[1:last_valid]
     base = last(rows)
-    du_info = controlled_du(rows, C, step_control, max_delta_rho)
+    du_info = gp2026_row_step_du(rows, C, step_control;
+                                 max_delta_rho, max_delta_eta)
     target_du = du_factor * du_info.selected
     isfinite(target_du) && target_du > 0 || error("selected target Delta U is not positive")
     target_u = min(Umax, base.u + target_du)
@@ -204,9 +188,11 @@ function run_stiffness(::Type{T}) where {T<:Real}
             ", step_control = ", step_control)
     println("# base rows requested/valid = ", (base_rows, length(rows)),
             ", base U = ", base.u)
-    println("# Delta U selected/outer/max-row/geometric/throat = ",
+    println("# max_delta_rho/max_delta_eta = ",
+            (max_delta_rho, max_delta_eta))
+    println("# Delta U selected/outer/max-row/geometric/throat/eta = ",
             (du_info.selected, du_info.outer_du, du_info.max_row_du,
-             du_info.geometric_du, du_info.throat_du))
+             du_info.geometric_du, du_info.throat_du, du_info.eta_du))
     println("# target Delta U = ", target_u - base.u,
             ", target U = ", target_u,
             ", reference pieces = ", reference_pieces,

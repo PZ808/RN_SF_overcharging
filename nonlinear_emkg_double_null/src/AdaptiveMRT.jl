@@ -540,6 +540,24 @@ function throat_row_du(rows::AbstractVector{<:NLRow}, C::Real; max_delta_rho=0.2
     return convert(T, max_delta_rho) / max_speed
 end
 
+function eta_row_du(rows::AbstractVector{<:NLRow}, C::Real; max_delta_eta=0.025)
+    T = promote_type(typeof(C), typeof(first(rows).u), typeof(max_delta_eta))
+    length(rows) >= 2 || return T(Inf)
+    current = rows[end]
+    previous = rows[end - 1]
+    current.v == previous.v ||
+        throw(ArgumentError("eta step requires matching V grids"))
+    du_previous = current.u - previous.u
+    du_previous > 0 || throw(ArgumentError("row U coordinates must increase"))
+    current_eta = throat_row_diagnostics(current).eta
+    previous_eta = throat_row_diagnostics(previous).eta
+    eta_u = [(current_eta[j] - previous_eta[j]) / du_previous
+             for j in eachindex(current_eta)]
+    max_speed = maximum(abs, eta_u)
+    isfinite(max_speed) && max_speed > 0 || return T(Inf)
+    return convert(T, max_delta_eta) / max_speed
+end
+
 function west_boundary_from_rectangular(st::NLState, g::Grid)
     i = firstindex(g.u)
     return [NLPoint(g.u[i], g.v[j], st.r[i, j], st.logf[i, j], st.phi_re[i, j],
@@ -965,18 +983,20 @@ function geometric_row_du(rows::AbstractVector{<:NLRow}, C::Real)
     return minimum(candidates)
 end
 
-const GP2026_ROW_STEP_CONTROLS = (:outer, :max_row, :geometric, :throat, :local)
+const GP2026_ROW_STEP_CONTROLS = (:outer, :max_row, :geometric, :throat, :eta, :local)
 
 function gp2026_row_step_du(rows::AbstractVector{<:NLRow}, C::Real,
-                            step_control::Symbol; max_delta_rho=0.25)
+                            step_control::Symbol; max_delta_rho=0.25,
+                            max_delta_eta=0.025)
     C > 0 || throw(ArgumentError("C must be positive"))
     step_control in GP2026_ROW_STEP_CONTROLS ||
-        throw(ArgumentError("step_control must be :outer, :max_row, :geometric, :throat, or :local"))
+        throw(ArgumentError("step_control must be :outer, :max_row, :geometric, :throat, :eta, or :local"))
     previous = last(rows)
     outer_du = 2C / exp(last(previous.logf))
     max_row_du = 2C / exp(maximum(previous.logf))
     geometric_du = geometric_row_du(rows, C)
     throat_du = throat_row_du(rows, C; max_delta_rho)
+    eta_du = eta_row_du(rows, C; max_delta_eta)
     selected = if step_control === :outer
         outer_du
     elseif step_control === :max_row
@@ -985,10 +1005,12 @@ function gp2026_row_step_du(rows::AbstractVector{<:NLRow}, C::Real,
         isfinite(geometric_du) ? geometric_du : max_row_du
     elseif step_control === :throat
         isfinite(throat_du) ? throat_du : max_row_du
+    elseif step_control === :eta
+        isfinite(eta_du) ? min(max_row_du, eta_du) : max_row_du
     else
-        minimum((max_row_du, geometric_du, throat_du))
+        minimum((max_row_du, geometric_du, throat_du, eta_du))
     end
-    return (; selected, outer_du, max_row_du, geometric_du, throat_du)
+    return (; selected, outer_du, max_row_du, geometric_du, throat_du, eta_du)
 end
 
 finite_nlrow(row::NLRow) =
@@ -997,6 +1019,164 @@ finite_nlrow(row::NLRow) =
     all(isfinite, row.Au) && all(isfinite, row.Av) &&
     all(isfinite, row.Q) && all(>(zero(eltype(row.r))), row.r)
 
+function finite_max_abs_difference(a::AbstractVector, b::AbstractVector)
+    length(a) == length(b) || throw(ArgumentError("arrays must have equal length"))
+    isempty(a) && return zero(promote_type(eltype(a), eltype(b)))
+    T = promote_type(eltype(a), eltype(b))
+    maximum_difference = zero(T)
+    for j in eachindex(a)
+        difference = abs(a[j] - b[j])
+        isfinite(difference) || return T(Inf)
+        maximum_difference = max(maximum_difference, difference)
+    end
+    return maximum_difference
+end
+
+function row_horizon_function(row::NLRow, ru::AbstractVector)
+    length(row.r) == length(ru) ||
+        throw(ArgumentError("row and r_U arrays must have equal length"))
+    rv = coordinate_derivative(row.r, row.v)
+    return [-4 * ru[j] * rv[j] / exp(row.logf[j]) for j in eachindex(row.r)]
+end
+
+"""
+Measure realized row-to-row changes after a candidate GP2026 row advance.
+
+This is the accept/reject diagnostic for the semi-implicit throat controller.
+`max_abs_H` compares the horizon function `H=-4 r_U r_V/f` when a previous
+row derivative is available; for the first accepted row it is set to zero.
+"""
+function realized_row_change_summary(rows::AbstractVector{<:NLRow},
+                                     candidate::NLRow)
+    isempty(rows) && throw(ArgumentError("at least one previous row is required"))
+    previous = last(rows)
+    previous.v == candidate.v ||
+        throw(ArgumentError("candidate row must share the same V grid"))
+    du = candidate.u - previous.u
+    du > 0 || throw(ArgumentError("candidate row U must exceed previous row U"))
+
+    if !finite_nlrow(candidate)
+        return (
+            finite=false,
+            Delta_U=du,
+            max_abs_r=Inf,
+            max_abs_logf=Inf,
+            max_abs_rho=Inf,
+            max_abs_eta=Inf,
+            max_abs_H=Inf,
+        )
+    end
+
+    previous_throat = throat_row_diagnostics(previous)
+    candidate_throat = throat_row_diagnostics(candidate)
+    max_abs_H = if length(rows) >= 2
+        before_previous = rows[end - 1]
+        before_previous.v == previous.v ||
+            throw(ArgumentError("row history must share the same V grid"))
+        previous_du = previous.u - before_previous.u
+        previous_du > 0 ||
+            throw(ArgumentError("row U coordinates must increase"))
+        previous_ru = [(previous.r[j] - before_previous.r[j]) / previous_du
+                       for j in eachindex(previous.r)]
+        candidate_ru = [(candidate.r[j] - previous.r[j]) / du
+                        for j in eachindex(candidate.r)]
+        previous_H = row_horizon_function(previous, previous_ru)
+        candidate_H = row_horizon_function(candidate, candidate_ru)
+        finite_max_abs_difference(candidate_H, previous_H)
+    else
+        zero(du)
+    end
+
+    return (
+        finite=true,
+        Delta_U=du,
+        max_abs_r=finite_max_abs_difference(candidate.r, previous.r),
+        max_abs_logf=finite_max_abs_difference(candidate.logf, previous.logf),
+        max_abs_rho=finite_max_abs_difference(candidate_throat.rho,
+                                              previous_throat.rho),
+        max_abs_eta=finite_max_abs_difference(candidate_throat.eta,
+                                              previous_throat.eta),
+        max_abs_H=max_abs_H,
+    )
+end
+
+function row_change_accepted(change; max_realized_delta_rho,
+                             max_realized_delta_eta,
+                             max_realized_delta_r,
+                             max_realized_delta_logf,
+                             max_realized_delta_H)
+    return change.finite &&
+           change.max_abs_rho <= max_realized_delta_rho &&
+           change.max_abs_eta <= max_realized_delta_eta &&
+           change.max_abs_r <= max_realized_delta_r &&
+           change.max_abs_logf <= max_realized_delta_logf &&
+           change.max_abs_H <= max_realized_delta_H
+end
+
+function advance_u_row_backtracked(rows::AbstractVector{<:NLRow},
+                                   target_u::Real,
+                                   ep::EvolutionParams;
+                                   U0, V0, M0,
+                                   iterations::Int,
+                                   hyperbolic_charge::Bool,
+                                   backtrack_factor,
+                                   max_backtracks::Int,
+                                   min_backtrack_du,
+                                   max_realized_delta_rho,
+                                   max_realized_delta_eta,
+                                   max_realized_delta_r,
+                                   max_realized_delta_logf,
+                                   max_realized_delta_H)
+    current = last(rows)
+    target_u > current.u ||
+        throw(ArgumentError("target U must exceed current row U"))
+    zero(current.u) < backtrack_factor < one(current.u) ||
+        throw(ArgumentError("backtrack_factor must be between 0 and 1"))
+    max_backtracks >= 0 ||
+        throw(ArgumentError("max_backtracks must be nonnegative"))
+
+    trial_u = target_u
+    last_candidate = nothing
+    last_change = nothing
+    for attempt in 0:max_backtracks
+        south = gp2026_na_boundary_point(trial_u, ep; U0, V0, M0)
+        candidate = advance_u_row(current, south, ep;
+                                  iterations, reduced_scalar=true,
+                                  hyperbolic_charge)
+        change = realized_row_change_summary(rows, candidate)
+        if row_change_accepted(change; max_realized_delta_rho,
+                               max_realized_delta_eta,
+                               max_realized_delta_r,
+                               max_realized_delta_logf,
+                               max_realized_delta_H)
+            return (
+                accepted=true,
+                row=candidate,
+                target_u=trial_u,
+                attempts=attempt,
+                change=change,
+            )
+        end
+
+        last_candidate = candidate
+        last_change = change
+        trial_du = (trial_u - current.u) * backtrack_factor
+        isfinite(trial_du) && trial_du > min_backtrack_du ||
+            break
+        next_trial_u = current.u + trial_du
+        next_trial_u > current.u || break
+        trial_u = next_trial_u
+    end
+
+    return (
+        accepted=false,
+        row=last_candidate,
+        target_u=trial_u,
+        attempts=max_backtracks,
+        change=last_change,
+    )
+end
+
 """
 Evolve GP2026 initial data with a row-wise `U` step criterion.
 
@@ -1004,14 +1184,19 @@ The paper uses `ds^2=-2*f_GP*dU*dV`, while the solver stores
 `f_code=2*f_GP`. Therefore its `Delta U=C/f_GP(U,Vmax)` rule is
 `Delta U=2C/f_code(U,Vmax)` here. In practice the stiff `f_code` peak can
 move away from `Vmax` after apparent-horizon formation, so the default
-`step_control=:local` takes the smaller of the largest-`f_code` limiter and
-the local geometric condition `|r_U| Delta U <= C |Delta r|`, following the
-spirit of Gundlach/Baumgarte/Hilditch arXiv:1908.05971. The literal paper
-rule remains available as `step_control=:outer`; `step_control=:max_row`
-uses only the largest-`f_code` limiter. Setting `substep_control` to one of
-the same controls advances each selected macro step through smaller stored
-substeps, which is useful when the paper macro step is too large for the local
-cell solve.
+`step_control=:local` takes the smaller of the largest-`f_code` limiter, the
+local geometric condition `|r_U| Delta U <= C |Delta r|`, the logarithmic
+throat limiter, and the compact rational throat limiter based on
+`eta=1-|Q|/r`. This follows the spirit of Gundlach/Baumgarte/Hilditch
+arXiv:1908.05971 while retaining the near-horizon GP/MRT coordinates. The
+literal paper rule remains available as `step_control=:outer`;
+`step_control=:max_row` uses only the largest-`f_code` limiter. Setting
+`substep_control` to one of the same controls advances each selected macro
+step through smaller stored substeps, which is useful when the paper macro
+step is too large for the local cell solve. Setting `backtrack=true` adds a
+candidate-row accept/reject loop: if the realized future-row changes in
+`rho`, `eta`, `r`, `logf`, or `H=-4r_Ur_V/f` exceed the requested caps, the
+trial `Delta U` is reduced and the row is recomputed.
 """
 function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6, C=0.6,
                                   U0=initial.u, V0=first(initial.v), M0=ep.rn.M,
@@ -1019,9 +1204,19 @@ function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6,
                                   hyperbolic_charge::Bool=true,
                                   step_control::Symbol=:local,
                                   max_delta_rho=0.25,
+                                  max_delta_eta=0.025,
                                   substep_control::Symbol=:none,
                                   substep_C=C,
-                                  max_substeps_per_row::Int=10_000)
+                                  max_substeps_per_row::Int=10_000,
+                                  backtrack::Bool=false,
+                                  backtrack_factor=0.5,
+                                  max_backtracks::Int=20,
+                                  min_backtrack_du=0.0,
+                                  max_realized_delta_rho=max_delta_rho,
+                                  max_realized_delta_eta=max_delta_eta,
+                                  max_realized_delta_r=Inf,
+                                  max_realized_delta_logf=Inf,
+                                  max_realized_delta_H=Inf)
     C > 0 || throw(ArgumentError("C must be positive"))
     substep_C > 0 || throw(ArgumentError("substep_C must be positive"))
     Umax > initial.u || throw(ArgumentError("Umax must exceed initial U"))
@@ -1029,38 +1224,65 @@ function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6,
     max_substeps_per_row >= 1 ||
         throw(ArgumentError("max_substeps_per_row must be at least 1"))
     step_control in GP2026_ROW_STEP_CONTROLS ||
-        throw(ArgumentError("step_control must be :outer, :max_row, :geometric, :throat, or :local"))
+        throw(ArgumentError("step_control must be :outer, :max_row, :geometric, :throat, :eta, or :local"))
     substep_control in (:none, GP2026_ROW_STEP_CONTROLS...) ||
-        throw(ArgumentError("substep_control must be :none, :outer, :max_row, :geometric, :throat, or :local"))
+        throw(ArgumentError("substep_control must be :none, :outer, :max_row, :geometric, :throat, :eta, or :local"))
     rows = [initial]
     while last(rows).u < Umax && length(rows) < max_rows
         previous = last(rows)
-        du = gp2026_row_step_du(rows, C, step_control; max_delta_rho).selected
+        du = gp2026_row_step_du(rows, C, step_control; max_delta_rho,
+                                max_delta_eta).selected
         isfinite(du) && du > 0 || break
         target_u = min(Umax, previous.u + du)
         target_u > previous.u || break
 
         if substep_control === :none
-            south = gp2026_na_boundary_point(target_u, ep; U0, V0, M0)
-            next = advance_u_row(previous, south, ep;
-                                 iterations, reduced_scalar=true, hyperbolic_charge)
-            push!(rows, next)
-            finite_nlrow(next) || break
+            if backtrack
+                result = advance_u_row_backtracked(
+                    rows, target_u, ep;
+                    U0, V0, M0, iterations, hyperbolic_charge,
+                    backtrack_factor, max_backtracks, min_backtrack_du,
+                    max_realized_delta_rho, max_realized_delta_eta,
+                    max_realized_delta_r, max_realized_delta_logf,
+                    max_realized_delta_H,
+                )
+                result.accepted || break
+                push!(rows, result.row)
+            else
+                south = gp2026_na_boundary_point(target_u, ep; U0, V0, M0)
+                next = advance_u_row(previous, south, ep;
+                                     iterations, reduced_scalar=true, hyperbolic_charge)
+                push!(rows, next)
+                finite_nlrow(next) || break
+            end
         else
             substeps = 0
             while last(rows).u < target_u && length(rows) < max_rows
                 current = last(rows)
                 substep = gp2026_row_step_du(rows, substep_C, substep_control;
-                                             max_delta_rho).selected
+                                             max_delta_rho, max_delta_eta).selected
                 isfinite(substep) && substep > 0 || break
                 next_u = min(target_u, current.u + substep)
                 next_u > current.u || break
-                south = gp2026_na_boundary_point(next_u, ep; U0, V0, M0)
-                next = advance_u_row(current, south, ep;
-                                     iterations, reduced_scalar=true,
-                                     hyperbolic_charge)
-                push!(rows, next)
-                finite_nlrow(next) || break
+                if backtrack
+                    result = advance_u_row_backtracked(
+                        rows, next_u, ep;
+                        U0, V0, M0, iterations, hyperbolic_charge,
+                        backtrack_factor, max_backtracks, min_backtrack_du,
+                        max_realized_delta_rho, max_realized_delta_eta,
+                        max_realized_delta_r, max_realized_delta_logf,
+                        max_realized_delta_H,
+                    )
+                    result.accepted || break
+                    push!(rows, result.row)
+                else
+                    south = gp2026_na_boundary_point(next_u, ep; U0, V0, M0)
+                    next = advance_u_row(current, south, ep;
+                                         iterations, reduced_scalar=true,
+                                         hyperbolic_charge)
+                    push!(rows, next)
+                    finite_nlrow(next) || break
+                end
                 substeps += 1
                 substeps < max_substeps_per_row || break
             end

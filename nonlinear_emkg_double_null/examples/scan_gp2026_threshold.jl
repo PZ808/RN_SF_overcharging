@@ -73,7 +73,8 @@ function final_horizon_properties(state::AdaptiveNLState)
 end
 
 function run_case(q0, qstar, vmax, dv, amplitude, C, Umax, max_rows,
-                  substep_control, substep_C, max_substeps_per_row)
+                  substep_control, substep_C, max_substeps_per_row,
+                  max_delta_eta)
     T = promote_type(typeof(q0), typeof(qstar), typeof(vmax), typeof(dv),
                      typeof(amplitude), typeof(C), typeof(Umax))
     U0 = parse(T, "-1.0")
@@ -92,7 +93,8 @@ function run_case(q0, qstar, vmax, dv, amplitude, C, Umax, max_rows,
     evolved = evolve_gp2026_u_adaptive(initial, ep; Umax, C, iterations=10,
                                        max_rows, hyperbolic_charge=true,
                                        step_control=:outer, substep_control,
-                                       substep_C, max_substeps_per_row)
+                                       substep_C, max_substeps_per_row,
+                                       max_delta_eta)
 
     last_valid = findlast(finite_row, evolved.rows)
     isnothing(last_valid) && error("initial GP row is invalid for Q0=$q0")
@@ -194,26 +196,30 @@ function run_scan(::Type{T}) where {T<:Real}
     Umax = real_argument(7, "1.6", T)
     max_rows = integer_argument(8, 180)
     substep_control_argument = length(ARGS) >= 9 ? ARGS[9] : "none"
-    substep_control_argument in ("none", "outer", "max-row", "geometric", "throat", "local") ||
-        throw(ArgumentError("substep control must be none, outer, max-row, geometric, throat, or local"))
+    substep_control_argument in ("none", "outer", "max-row", "geometric", "throat", "eta", "local") ||
+        throw(ArgumentError("substep control must be none, outer, max-row, geometric, throat, eta, or local"))
     substep_control = substep_control_argument == "none" ? :none :
                       substep_control_argument == "outer" ? :outer :
                       substep_control_argument == "max-row" ? :max_row :
                       substep_control_argument == "geometric" ? :geometric :
                       substep_control_argument == "throat" ? :throat :
+                      substep_control_argument == "eta" ? :eta :
                       :local
     substep_C = real_argument(10, string(C), T)
     max_substeps_per_row = integer_argument(11, 10_000)
+    max_delta_eta = real_argument(13, "0.025", T)
 
     println("# GP2026 Section IIIA threshold scan")
     println("# qstar = ", qstar, ", Vmax = ", vmax, ", Delta V = ", dv,
             ", C = ", C, ", max_rows = ", max_rows,
             ", substep_control = ", substep_control,
-            ", substep_C = ", substep_C)
+            ", substep_C = ", substep_C,
+            ", max_delta_eta = ", max_delta_eta)
     println("# Columns with `slice_trap_*` and final_AH_* are the direct Section IIIA diagnostics.")
     println("# direct_vtrap_* is the row-local apparent horizon; vtrap_proxy_* is the closest positive-r_V sample when direct Vtrap is missing.")
     rows = [run_case(q0, qstar, vmax, dv, amplitude, C, Umax, max_rows,
-                     substep_control, substep_C, max_substeps_per_row)
+                     substep_control, substep_C, max_substeps_per_row,
+                     max_delta_eta)
             for q0 in qvalues]
     print_table(rows)
 end
