@@ -114,31 +114,167 @@ end
 
 gp2026_reference_extreme(M0::Real) = RNParams(M0, M0)
 
-function gp2026_extremal_gauge_initial_radius(U, V; U0=-1.0, V0=0.0, M0=1.0)
+"""
+Exact extremal-RN radius in the GP2026 uncompactified MRT normalization.
+
+The coordinate relation is
+
+    rstar(r) = rstar(M - U/2) + (V - V0)/2,
+
+so `r_U=-1/2` on `V=V0` and the future horizon is the regular surface
+`U=0`. This is MRT's analytic chart after the factor-two `U` rescaling used
+by Gelles-Pretorius.
+"""
+function gp2026_exact_extremal_rn_radius(
+    U::Real,
+    V::Real,
+    p::RNParams;
+    V0=zero(V),
+    tol=1.0e-12,
+    maxiter::Int=100,
+)
+    require_extreme_horizon_endpoint(p)
+    rplus, _ = horizons(p)
+    iszero(U) && return rplus
+    target = rstar(rplus - U / 2, p) + (V - V0) / 2
+    if U > 0
+        return mrt2013_interior_radius_from_rstar(target, p; tol, maxiter)
+    end
+    return radius_from_rstar(target, p; tol, maxiter)
+end
+
+"""
+Exact stored lapse `f_code=2f_GP` for extremal RN in GP2026 MRT coordinates.
+
+With `ds^2=-f_code*dU*dV`, the analytic value is
+
+    f_code = F(r) / F(M-U/2),
+
+whose regular future-horizon limit is one.
+"""
+function gp2026_exact_extremal_rn_fcode(
+    U::Real,
+    V::Real,
+    p::RNParams;
+    V0=zero(V),
+)
+    require_extreme_horizon_endpoint(p)
+    iszero(U) &&
+        return one(promote_type(typeof(U), typeof(V), typeof(p.M)))
+    rplus, _ = horizons(p)
+    r = gp2026_exact_extremal_rn_radius(U, V, p; V0)
+    return metric_F(r, p) / metric_F(rplus - U / 2, p)
+end
+
+"""
+Seed both characteristic legs with exact extremal RN in GP2026 MRT gauge.
+
+This initializer is deliberately scalar-free and is the manufactured solution
+used to validate evolution through `U=0`. Interior points remain unset for the
+cell evolution to fill.
+"""
+function initialize_gp2026_exact_extremal_rn!(
+    st::NLState,
+    g::Grid,
+    ep::EvolutionParams;
+    V0=first(g.v),
+)
+    require_extreme_horizon_endpoint(ep.rn)
+    first(g.v) == V0 ||
+        throw(ArgumentError("exact GP2026 RN data require first V point V0=$V0"))
+
+    fill!(st.r, zero(eltype(st.r)))
+    fill!(st.logf, zero(eltype(st.logf)))
+    fill!(st.phi_re, zero(eltype(st.phi_re)))
+    fill!(st.phi_im, zero(eltype(st.phi_im)))
+    fill!(st.Au, zero(eltype(st.Au)))
+    fill!(st.Av, zero(eltype(st.Av)))
+    fill!(st.Q, convert(eltype(st.Q), ep.rn.Q0))
+
+    i0 = firstindex(g.u)
+    j0 = firstindex(g.v)
+    for i in eachindex(g.u)
+        U = g.u[i]
+        st.r[i, j0] = gp2026_exact_extremal_rn_radius(U, V0, ep.rn; V0)
+        st.logf[i, j0] =
+            log(gp2026_exact_extremal_rn_fcode(U, V0, ep.rn; V0))
+    end
+    for j in eachindex(g.v)
+        V = g.v[j]
+        st.r[i0, j] =
+            gp2026_exact_extremal_rn_radius(g.u[i0], V, ep.rn; V0)
+        st.logf[i0, j] =
+            log(gp2026_exact_extremal_rn_fcode(g.u[i0], V, ep.rn; V0))
+    end
+
+    seed_quasilorenz_potential!(st, g, ep)
+    return st
+end
+
+function require_gp2026_pulse_leg_gauge(pulse_leg_gauge::Symbol)
+    pulse_leg_gauge in (:areal_affine, :ef_affine) ||
+        throw(ArgumentError(
+            "pulse_leg_gauge must be :areal_affine or :ef_affine",
+        ))
+    return pulse_leg_gauge
+end
+
+function gp2026_extremal_gauge_initial_radius(
+    U, V;
+    U0=-1.0,
+    V0=0.0,
+    M0=1.0,
+    pulse_leg_gauge::Symbol=:areal_affine,
+)
+    require_gp2026_pulse_leg_gauge(pulse_leg_gauge)
     scale = max(abs(U), abs(V), abs(U0), abs(V0), one(float(M0)))
     tol = 64 * eps(float(scale)) * scale
     if abs(V - V0) <= tol
         return M0 - U / 2
     elseif abs(U - U0) <= tol
-        reference = gp2026_reference_extreme(M0)
         r0 = M0 - U0 / 2
-        target = rstar(r0, reference) + (V - V0) / 2
-        return radius_from_rstar(target, reference)
+        if pulse_leg_gauge === :areal_affine
+            return r0 + (V - V0) / 2
+        end
+        reference = gp2026_reference_extreme(M0)
+        target_rstar = rstar(r0, reference) + (V - V0) / 2
+        return radius_from_rstar(target_rstar, reference)
     end
     throw(ArgumentError("the GP2026 initial-radius helper is defined only on the two initial null legs"))
 end
 
 gp2026_extremal_gauge_ru(U; M0=1.0) = -one(promote_type(typeof(U), typeof(M0))) / 2
 
-function gp2026_extremal_gauge_rv(U, V; U0=-1.0, V0=0.0, M0=1.0)
-    r = gp2026_extremal_gauge_initial_radius(U, V; U0, V0, M0)
+function gp2026_extremal_gauge_rv(
+    U, V;
+    U0=-1.0,
+    V0=0.0,
+    M0=1.0,
+    pulse_leg_gauge::Symbol=:areal_affine,
+)
+    require_gp2026_pulse_leg_gauge(pulse_leg_gauge)
+    pulse_leg_gauge === :areal_affine &&
+        return one(promote_type(typeof(U), typeof(V), typeof(M0))) / 2
+    r = gp2026_extremal_gauge_initial_radius(
+        U, V; U0, V0, M0, pulse_leg_gauge,
+    )
     return metric_F(r, gp2026_reference_extreme(M0)) / 2
 end
 
-function gp2026_fcorner_code(ep::EvolutionParams; U0=-1.0, V0=0.0, M0=ep.rn.M)
-    r0 = gp2026_extremal_gauge_initial_radius(U0, V0; U0, V0, M0)
+function gp2026_fcorner_code(
+    ep::EvolutionParams;
+    U0=-1.0,
+    V0=0.0,
+    M0=ep.rn.M,
+    pulse_leg_gauge::Symbol=:areal_affine,
+)
+    r0 = gp2026_extremal_gauge_initial_radius(
+        U0, V0; U0, V0, M0, pulse_leg_gauge,
+    )
     ru0 = gp2026_extremal_gauge_ru(U0; M0)
-    rv0 = gp2026_extremal_gauge_rv(U0, V0; U0, V0, M0)
+    rv0 = gp2026_extremal_gauge_rv(
+        U0, V0; U0, V0, M0, pulse_leg_gauge,
+    )
     denominator = ep.rn.Q0^2 + r0 * (r0 - 2M0)
     fcorner = -4 * r0^2 * ru0 * rv0 / denominator
     fcorner > 0 || throw(ArgumentError("GP2026 initial corner requires positive f"))
@@ -362,11 +498,15 @@ this production branch `st.phi_re` and `st.phi_im` store
 the paper's `A0` and `omega_tilde` for
 `r*phi_GP=A(V)*exp(-i*omega_tilde*V)` on `U=U0`. The initial legs satisfy
 `r(U,V0)=M0-U/2`, so `r_U=-1/2`, and `r(U0,V)` is obtained from the
-extremal-reference tortoise coordinate.
+corner-compatible areal-affine gauge `r(U0,V)=M0-U0/2+(V-V0)/2`.
+The previous extremal-reference tortoise-coordinate reading remains available
+as `pulse_leg_gauge=:ef_affine`.
 """
 function initialize_gp2026_single_pulse!(st::NLState, g::Grid, ep::EvolutionParams;
                                           U0=-1.0, V0=0.0, width=20.0,
-                                          M0=ep.rn.M)
+                                          M0=ep.rn.M,
+                                          pulse_leg_gauge::Symbol=:areal_affine)
+    require_gp2026_pulse_leg_gauge(pulse_leg_gauge)
     first(g.u) == U0 ||
         throw(ArgumentError("GP2026 single-pulse data require first U point U0=$U0"))
     first(g.v) == V0 ||
@@ -387,10 +527,14 @@ function initialize_gp2026_single_pulse!(st::NLState, g::Grid, ep::EvolutionPara
     scalar_scale = sqrt(32 * pi)
 
     for i in eachindex(g.u)
-        st.r[i, j0] = gp2026_extremal_gauge_initial_radius(g.u[i], V0; U0, V0, M0)
+        st.r[i, j0] = gp2026_extremal_gauge_initial_radius(
+            g.u[i], V0; U0, V0, M0, pulse_leg_gauge,
+        )
     end
     for j in eachindex(g.v)
-        st.r[i0, j] = gp2026_extremal_gauge_initial_radius(U0, g.v[j]; U0, V0, M0)
+        st.r[i0, j] = gp2026_extremal_gauge_initial_radius(
+            U0, g.v[j]; U0, V0, M0, pulse_leg_gauge,
+        )
         amplitude = gp2026_single_pulse_envelope(g.v[j];
                                                  amplitude=ep.amplitude, width)
         phase = ep.omega * g.v[j]
@@ -398,15 +542,21 @@ function initialize_gp2026_single_pulse!(st::NLState, g::Grid, ep::EvolutionPara
         st.phi_im[i0, j] = -scalar_scale * amplitude * sin(phase)
     end
 
-    rv0 = gp2026_extremal_gauge_rv(U0, V0; U0, V0, M0)
-    fcorner = gp2026_fcorner_code(ep; U0, V0, M0)
+    rv0 = gp2026_extremal_gauge_rv(
+        U0, V0; U0, V0, M0, pulse_leg_gauge,
+    )
+    fcorner = gp2026_fcorner_code(ep; U0, V0, M0, pulse_leg_gauge)
 
     # No scalar data on N_A: r_U/f is constant there and r_U=-1/2.
     st.logf[:, j0] .= log(fcorner)
 
     function initial_phi_and_dv(V)
-        r = gp2026_extremal_gauge_initial_radius(U0, V; U0, V0, M0)
-        rv = gp2026_extremal_gauge_rv(U0, V; U0, V0, M0)
+        r = gp2026_extremal_gauge_initial_radius(
+            U0, V; U0, V0, M0, pulse_leg_gauge,
+        )
+        rv = gp2026_extremal_gauge_rv(
+            U0, V; U0, V0, M0, pulse_leg_gauge,
+        )
         amplitude = gp2026_single_pulse_envelope(V; amplitude=ep.amplitude, width)
         derivative = gp2026_single_pulse_envelope_derivative(V;
                                                               amplitude=ep.amplitude, width)
@@ -435,7 +585,9 @@ function initialize_gp2026_single_pulse!(st::NLState, g::Grid, ep::EvolutionPara
         st.Q[i0, j] = st.Q[i0, j - 1] - dv * rmid^2 * Jv / 8
         dlogf = rmid * (phiv_re^2 + phiv_im^2) / (4 * rvmid)
         logf_integral += dv * dlogf
-        rv = gp2026_extremal_gauge_rv(U0, g.v[j]; U0, V0, M0)
+        rv = gp2026_extremal_gauge_rv(
+            U0, g.v[j]; U0, V0, M0, pulse_leg_gauge,
+        )
         st.logf[i0, j] = log(fcorner * rv / rv0) + logf_integral
     end
 
@@ -570,16 +722,25 @@ function solve_ingoing_leg_logf_constraint!(st::NLState, g::Grid, ep::EvolutionP
     return st
 end
 
-function evolve_nonlinear!(st::NLState, g::Grid, ep::EvolutionParams; iterations::Int=5,
-                           subtract_rn_background::Bool=false,
-                           reduced_scalar::Bool=false,
-                           hyperbolic_charge::Bool=false)
+function evolve_nonlinear!(
+    st::NLState,
+    g::Grid,
+    ep::EvolutionParams;
+    iterations::Int=5,
+    subtract_rn_background::Bool=false,
+    reduced_scalar::Bool=false,
+    hyperbolic_charge::Bool=false,
+    cell_solver::Symbol=:picard_log,
+    newton_rtol=1.0e-13,
+    newton_atol=1.0e-15,
+)
     nu, nv = size(g)
     for i in 1:nu-1
         for j in 1:nv-1
             step_nonlinear_cell!(st, g, ep, i, j;
                                  iterations, subtract_rn_background, reduced_scalar,
-                                 hyperbolic_charge)
+                                 hyperbolic_charge, cell_solver, newton_rtol,
+                                 newton_atol)
         end
     end
     return st
@@ -608,6 +769,105 @@ function metric_rhs(r, f, ru, rv, q, source::StressEnergyComponents)
     ruv = (-ru * rv - f * (1 - q^2 / r^2) / 4) / r
     logfuv = f / (2r^2) + 2 * ru * rv / r^2 - q^2 * f / r^4 - scalar_uv_source
     return ruv, logfuv
+end
+
+function direct_lapse_rhs(r, f, fu, fv, ru, rv, q,
+                          source::StressEnergyComponents)
+    ruv, logfuv = metric_rhs(r, f, ru, rv, q, source)
+    fuv = fu * fv / f + f * logfuv
+    return ruv, fuv
+end
+
+function scaled_cell_residual_norm(residual, values, rtol, atol)
+    norm = zero(promote_type(eltype(residual), eltype(values),
+                             typeof(rtol), typeof(atol)))
+    for k in eachindex(residual, values)
+        scale = atol + rtol * max(abs(values[k]), one(values[k]))
+        norm = max(norm, abs(residual[k]) / scale)
+    end
+    return norm
+end
+
+function damped_newton_cell(residual_function, initial;
+                            max_iterations::Int=10,
+                            rtol=1.0e-10,
+                            atol=1.0e-12,
+                            max_backtracks::Int=12)
+    max_iterations >= 1 ||
+        throw(ArgumentError("Newton max_iterations must be positive"))
+    zero(rtol) < rtol || throw(ArgumentError("Newton rtol must be positive"))
+    zero(atol) < atol || throw(ArgumentError("Newton atol must be positive"))
+
+    values = copy(initial)
+    residual = residual_function(values)
+    residual_norm = scaled_cell_residual_norm(residual, values, rtol, atol)
+    isfinite(residual_norm) ||
+        return (values=values, converged=false, iterations=0,
+                residual_norm=residual_norm)
+
+    T = eltype(values)
+    finite_difference_step = sqrt(eps(float(one(T))))
+    n = length(values)
+    jacobian = Matrix{T}(undef, n, n)
+    scaled_residual = Vector{T}(undef, n)
+    row_scale = Vector{T}(undef, n)
+    column_scale = Vector{T}(undef, n)
+
+    for iteration in 1:max_iterations
+        residual_norm <= one(residual_norm) &&
+            return (values=values, converged=true, iterations=iteration - 1,
+                    residual_norm=residual_norm)
+
+        for k in 1:n
+            row_scale[k] = atol + rtol * max(abs(values[k]), one(T))
+            column_scale[k] = max(abs(values[k]), one(T))
+            scaled_residual[k] = residual[k] / row_scale[k]
+        end
+        for column in 1:n
+            trial = copy(values)
+            increment = finite_difference_step * column_scale[column]
+            trial[column] += increment
+            trial_residual = residual_function(trial)
+            for row in 1:n
+                jacobian[row, column] =
+                    (trial_residual[row] - residual[row]) /
+                    (finite_difference_step * row_scale[row])
+            end
+        end
+
+        step_scaled = try
+            jacobian \ scaled_residual
+        catch
+            return (values=values, converged=false, iterations=iteration,
+                    residual_norm=residual_norm)
+        end
+        step = column_scale .* step_scaled
+
+        accepted = false
+        damping = one(T)
+        for _ in 0:max_backtracks
+            trial = values .- damping .* step
+            if all(isfinite, trial) && trial[1] > zero(T) && trial[2] > zero(T)
+                trial_residual = residual_function(trial)
+                trial_norm =
+                    scaled_cell_residual_norm(trial_residual, trial, rtol, atol)
+                if isfinite(trial_norm) && trial_norm < residual_norm
+                    values = trial
+                    residual = trial_residual
+                    residual_norm = trial_norm
+                    accepted = true
+                    break
+                end
+            end
+            damping /= 2
+        end
+        accepted ||
+            return (values=values, converged=false, iterations=iteration,
+                    residual_norm=residual_norm)
+    end
+
+    return (values=values, converged=residual_norm <= one(residual_norm),
+            iterations=max_iterations, residual_norm=residual_norm)
 end
 
 function charged_scalar_rhs(r, ru, rv, phi_re_u, phi_re_v, phi_im_u, phi_im_v,
@@ -698,9 +958,18 @@ end
 function step_nonlinear_cell!(st::NLState, g::Grid, ep::EvolutionParams, i::Int, j::Int;
                               iterations::Int=5, subtract_rn_background::Bool=false,
                               reduced_scalar::Bool=false,
-                              hyperbolic_charge::Bool=false)
+                              hyperbolic_charge::Bool=false,
+                              cell_solver::Symbol=:picard_log,
+                              newton_rtol=1.0e-13,
+                              newton_atol=1.0e-15)
     hyperbolic_charge && !reduced_scalar &&
         throw(ArgumentError("the implemented hyperbolic charge equation requires reduced_scalar=true"))
+    cell_solver in (:picard_log, :newton_direct) ||
+        throw(ArgumentError("cell_solver must be :picard_log or :newton_direct"))
+    cell_solver === :newton_direct && subtract_rn_background &&
+        throw(ArgumentError(
+            "RN background subtraction is not implemented for :newton_direct",
+        ))
     du = g.u[i + 1] - g.u[i]
     dv = g.v[j + 1] - g.v[j]
     e = ep.scalar_charge
@@ -723,6 +992,92 @@ function step_nonlinear_cell!(st::NLState, g::Grid, ep::EvolutionParams, i::Int,
     au11 = au10 - au01 + au00
     av11 = av01 - av10 + av00
     q11 = q01
+
+    if cell_solver === :newton_direct
+        f00, f10, f01 = exp(lf00), exp(lf10), exp(lf01)
+        f11 = f10 + f01 - f00
+        f11 > 0 || (f11 = max(f10, f01, f00))
+        q11 = hyperbolic_charge ? q10 + q01 - q00 : q01
+        initial = [r11, f11, pr11, pi11, au11, av11, q11]
+
+        function direct_residual(values)
+            r11n, f11n, pr11n, pi11n, au11n, av11n, q11n = values
+            r = corner_average(r00, r10, r01, r11n)
+            f = corner_average(f00, f10, f01, f11n)
+            pr = corner_average(pr00, pr10, pr01, pr11n)
+            pii = corner_average(pi00, pi10, pi01, pi11n)
+            au = corner_average(au00, au10, au01, au11n)
+            av = corner_average(av00, av10, av01, av11n)
+            q = corner_average(q00, q10, q01, q11n)
+
+            ru = corner_du(r00, r10, r01, r11n, du)
+            rv = corner_dv(r00, r10, r01, r11n, dv)
+            fu = corner_du(f00, f10, f01, f11n, du)
+            fv = corner_dv(f00, f10, f01, f11n, dv)
+            pru = corner_du(pr00, pr10, pr01, pr11n, du)
+            prv = corner_dv(pr00, pr10, pr01, pr11n, dv)
+            piu = corner_du(pi00, pi10, pi01, pi11n, du)
+            piv = corner_dv(pi00, pi10, pi01, pi11n, dv)
+
+            source = if reduced_scalar
+                stress_energy_reduced_scalar(
+                    r, f, q, ru, rv, pr, pii, pru, prv, piu, piv, au, av, e,
+                )
+            else
+                stress_energy(
+                    r, f, q, pr, pii, pru, prv, piu, piv, au, av, e,
+                )
+            end
+            ruv, fuv = direct_lapse_rhs(r, f, fu, fv, ru, rv, q, source)
+            pruv, piuv = if reduced_scalar
+                charged_reduced_scalar_rhs(
+                    r, ruv, pru, prv, piu, piv, pr, pii, au, av, e,
+                )
+            else
+                charged_scalar_rhs(
+                    r, ru, rv, pru, prv, piu, piv, pr, pii, au, av, e,
+                )
+            end
+            auv, avu, _, quc, _ = maxwell_rhs(r, f, q, source)
+            quv = reduced_scalar && hyperbolic_charge ?
+                  charged_reduced_charge_rhs(
+                      r, f, q, pr, pii, pru, prv, piu, piv, au, av, e,
+                  ) :
+                  zero(q)
+
+            q_target = hyperbolic_charge ?
+                       q10 + q01 - q00 + du * dv * quv :
+                       q01 + du * quc
+            return [
+                r11n - (r10 + r01 - r00 + du * dv * ruv),
+                f11n - (f10 + f01 - f00 + du * dv * fuv),
+                pr11n - (pr10 + pr01 - pr00 + du * dv * pruv),
+                pi11n - (pi10 + pi01 - pi00 + du * dv * piuv),
+                au11n - (au10 - au01 + au00 + 2dv * auv),
+                av11n - (av01 - av10 + av00 + 2du * avu),
+                q11n - q_target,
+            ]
+        end
+
+        solution = damped_newton_cell(
+            direct_residual, initial;
+            max_iterations=iterations, rtol=newton_rtol, atol=newton_atol,
+        )
+        solution.converged ||
+            throw(ErrorException(
+                "Newton cell solve failed at (i=$i, j=$j), " *
+                "scaled residual=$(solution.residual_norm)",
+            ))
+        r11, f11, pr11, pi11, au11, av11, q11 = solution.values
+        st.r[i + 1, j + 1] = r11
+        st.logf[i + 1, j + 1] = log(f11)
+        st.phi_re[i + 1, j + 1] = pr11
+        st.phi_im[i + 1, j + 1] = pi11
+        st.Au[i + 1, j + 1] = au11
+        st.Av[i + 1, j + 1] = av11
+        st.Q[i + 1, j + 1] = q11
+        return st
+    end
 
     for _ in 1:iterations
         r = corner_average(r00, r10, r01, r11)

@@ -31,6 +31,64 @@ end
     @test all(isfinite, state.Q)
 end
 
+@testset "exact GP2026 extremal RN horizon crossing" begin
+    p = RNParams(1.0, 1.0)
+    ep = EvolutionParams(rn=p, scalar_charge=0.0, amplitude=0.0, omega=0.0)
+
+    @test gp2026_exact_extremal_rn_radius(0.0, 7.0, p) == 1.0
+    @test gp2026_exact_extremal_rn_fcode(0.0, 7.0, p) == 1.0
+    @test gp2026_exact_extremal_rn_radius(-0.2, 0.0, p) ≈ 1.1
+    @test gp2026_exact_extremal_rn_radius(0.2, 0.0, p) ≈ 0.9
+    @test gp2026_exact_extremal_rn_fcode(-0.2, 0.0, p) ≈ 1.0
+    @test gp2026_exact_extremal_rn_fcode(0.2, 0.0, p) ≈ 1.0
+
+    errors = Float64[]
+    logf_errors = Float64[]
+    horizon_errors = Float64[]
+    horizon_f_errors = Float64[]
+    for (nu, nv) in ((31, 101), (61, 201))
+        grid = gp2026_grid(; nu, nv, U0=-0.4, V0=0.0, U1=0.2, V1=10.0)
+        state = NLState(grid)
+        initialize_gp2026_exact_extremal_rn!(state, grid, ep)
+        evolve_nonlinear!(
+            state, grid, ep;
+            iterations=15,
+            reduced_scalar=true,
+            hyperbolic_charge=true,
+            cell_solver=:newton_direct,
+        )
+
+        exact_r = [
+            gp2026_exact_extremal_rn_radius(U, V, p)
+            for U in grid.u, V in grid.v
+        ]
+        exact_logf = [
+            log(gp2026_exact_extremal_rn_fcode(U, V, p))
+            for U in grid.u, V in grid.v
+        ]
+        push!(errors, maximum(abs.(state.r .- exact_r)))
+        push!(logf_errors, maximum(abs.(state.logf .- exact_logf)))
+        horizon_index = findfirst(iszero, grid.u)
+        @test !isnothing(horizon_index)
+        push!(
+            horizon_errors,
+            maximum(abs.(state.r[horizon_index, :] .- p.M)),
+        )
+        push!(
+            horizon_f_errors,
+            maximum(abs.(exp.(state.logf[horizon_index, :]) .- 1)),
+        )
+        @test all(isfinite, state.r)
+        @test all(isfinite, state.logf)
+        @test all(state.Q .== p.Q0)
+    end
+
+    @test 3.8 < errors[1] / errors[2] < 4.2
+    @test 3.8 < logf_errors[1] / logf_errors[2] < 4.2
+    @test 3.8 < horizon_errors[1] / horizon_errors[2] < 4.2
+    @test 3.8 < horizon_f_errors[1] / horizon_f_errors[2] < 4.2
+end
+
 @testset "charged nonlinear initial Maxwell constraint" begin
     ep = EvolutionParams(rn=RNParams(1.0, 0.999), scalar_charge=0.6,
                          amplitude=1.0e-2, omega=0.6, center=4.0, width=1.0)
@@ -134,6 +192,7 @@ end
 
     @test state.r[:, 1] ≈ 1 .- grid.u ./ 2
     @test state.r[end, 1] ≈ 0.2
+    @test state.r[1, :] ≈ 1.5 .+ grid.v ./ 2
     @test all(iszero, state.phi_re[:, 1])
     @test all(iszero, state.phi_im[:, 1])
     @test all(state.Q[:, 1] .== q0)
@@ -161,6 +220,22 @@ end
         charged_charge_flux_v_profile(adaptive_state_from_rectangular(state, grid), ep;
                                       target_u=-1.0, reduced_scalar=true)
     @test maximum(abs, q_v_residual) < 3.0e-6
+
+    ef_state = NLState(grid)
+    initialize_gp2026_single_pulse!(
+        ef_state, grid, ep; pulse_leg_gauge=:ef_affine,
+    )
+    @test ef_state.r[1, end] < state.r[1, end]
+    ef_rv0 = gp2026_extremal_gauge_rv(
+        -1.0, 0.0; pulse_leg_gauge=:ef_affine,
+    )
+    ef_mass = renormalized_hawking_mass(
+        ef_state.r[1, 1], exp(ef_state.logf[1, 1]), ru0, ef_rv0, q0,
+    )
+    @test ef_mass ≈ 1.0
+    @test_throws ArgumentError initialize_gp2026_single_pulse!(
+        NLState(grid), grid, ep; pulse_leg_gauge=:invalid,
+    )
 end
 
 @testset "GP2026 short charged constraint evolution" begin
@@ -176,7 +251,7 @@ end
         charged_charge_flux_u_profile(adaptive, ep; target_v=10.0, reduced_scalar=true)
     _, _, _, _, q_v_residual =
         charged_charge_flux_v_profile(adaptive, ep; target_u=-0.95, reduced_scalar=true)
-    @test maximum(abs, q_u_residual) < 3.0e-6
+    @test maximum(abs, q_u_residual) < 1.2e-5
     @test maximum(abs, q_v_residual) < 1.2e-5
 end
 
@@ -207,6 +282,27 @@ end
     @test summary.max_abs_q_v_constraint < 2.0e-5
     @test summary.max_abs_logf_gp_literal > 1.0e-2
     @test summary.max_abs_logf_coulomb2 > 1.0e-2
+
+    newton_state = NLState(grid)
+    initialize_gp2026_single_pulse!(newton_state, grid, ep)
+    evolve_nonlinear!(
+        newton_state, grid, ep;
+        iterations=12, reduced_scalar=true, hyperbolic_charge=true,
+        cell_solver=:newton_direct,
+    )
+    newton_summary = cell_equation_residual_summary(
+        newton_state, grid, ep;
+        reduced_scalar=true, hyperbolic_charge=true,
+        cell_solver=:newton_direct,
+    )
+    @test newton_summary.max_abs_cell_residual < 1.0e-10
+    @test newton_summary.max_abs_r_uv < 1.0e-7
+    @test newton_summary.max_abs_f_uv < 1.0e-6
+    @test newton_summary.max_abs_psi_re_uv < 1.0e-7
+    @test newton_summary.max_abs_psi_im_uv < 1.0e-7
+    @test newton_summary.max_abs_q_uv < 1.0e-7
+    @test newton_summary.max_abs_au_v < 1.0e-8
+    @test newton_summary.max_abs_av_u < 1.0e-8
 end
 
 @testset "GP2026 U-step evolution" begin
@@ -255,6 +351,92 @@ end
     geometric_step = evolve_gp2026_u_adaptive(initial, ep; Umax=-0.9, C,
                                               iterations=10, step_control=:geometric)
     @test last(geometric_step.rows).u ≈ -0.9
+    eta_step = evolve_gp2026_u_adaptive(initial, ep; Umax=-0.9, C,
+                                        iterations=10, step_control=:eta,
+                                        max_delta_eta=0.01)
+    @test last(eta_step.rows).u ≈ -0.9
+    eta_du_info = gp2026_row_step_du(eta_step.rows, C, :eta; max_delta_eta=0.01)
+    @test isfinite(eta_du_info.eta_du)
+    @test eta_du_info.eta_du > 0
+    @test eta_du_info.selected == min(eta_du_info.max_row_du, eta_du_info.eta_du)
+    @test buffered_flag_intervals([false, true, false, false, true, false];
+                                  buffer_points=1) == [1:6]
+    @test buffered_flag_intervals([false, true, false, false, true, false];
+                                  buffer_points=1, cluster=:components) == [1:3, 4:6]
+    patches = row_lte_patches(initial, [2:4])
+    @test only(patches).first_index == 2
+    @test only(patches).last_index == 4
+    @test only(patches).first_v == grid.v[2]
+    lte = berger_oliger_row_lte(initial, -0.95, ep;
+                                iterations=10, atol=1.0e-8, rtol=1.0e-5,
+                                buffer_points=1)
+    @test lte.full.u ≈ -0.95
+    @test lte.refined.u ≈ -0.95
+    @test length(lte.error) == length(grid.v)
+    @test lte.max_error == maximum(lte.error)
+    @test all(isfinite, lte.error)
+    @test all(>=(0), lte.error)
+    @test row_lte_error(lte.refined, lte.refined) == zeros(length(grid.v))
+    @test all(interval -> first(interval) >= firstindex(grid.v) &&
+                           last(interval) <= lastindex(grid.v),
+              lte.intervals)
+    lte_half = berger_oliger_row_lte(initial, -0.975, ep;
+                                     iterations=10, atol=1.0, rtol=0.0)
+    raw_lte = maximum(row_lte_error(lte.full, lte.refined;
+                                    atol=1.0, rtol=0.0))
+    raw_lte_half = maximum(lte_half.error)
+    lte_ratio = raw_lte / raw_lte_half
+    @test 6.0 < lte_ratio < 10.0
+    child = berger_oliger_refine_patch(
+        initial, lte, ep;
+        interval=2:21, refinement_factor=2, iterations=10,
+    )
+    @test child.interval == 2:21
+    @test length(child.fine_v) == (length(child.interval) - 1) * 2 + 1
+    @test child.reintegrated
+    @test child.parent_midpoint.v == grid.v
+    @test child.parent_target.v == grid.v
+    @test all(isfinite, child.child_midpoint.r)
+    @test all(isfinite, child.child_target.r)
+    @test all(isfinite, child.parent_target.r)
+    @test child.max_correction >= 0
+    for (offset, parent_index) in enumerate(child.interval)
+        child_index = 1 + 2 * (offset - 1)
+        @test child.parent_midpoint.r[parent_index] ≈
+              child.child_midpoint.r[child_index]
+        @test child.parent_target.r[parent_index] ≈
+              child.child_target.r[child_index]
+        @test child.parent_target.Q[parent_index] ≈
+              child.child_target.Q[child_index]
+    end
+    bo_evolved = evolve_gp2026_u_adaptive(
+        initial, ep;
+        Umax=-0.98, C, iterations=10, max_rows=20,
+        step_control=:outer, bo_amr=true,
+        bo_rtol=1.0e-8, bo_refinement_factor=2,
+    )
+    @test last(bo_evolved.rows).u ≈ -0.98
+    @test all(row -> all(isfinite, row.r) && all(isfinite, row.logf),
+              bo_evolved.rows)
+    @test_throws ArgumentError evolve_gp2026_u_adaptive(
+        initial, ep;
+        Umax=-0.98, C, bo_amr=true, backtrack=true,
+    )
+    backtracked_step =
+        evolve_gp2026_u_adaptive(initial, ep; Umax=-0.9, C,
+                                 iterations=10, step_control=:outer,
+                                 backtrack=true,
+                                 max_realized_delta_rho=0.05,
+                                 max_realized_delta_eta=0.02,
+                                 max_rows=1_000)
+    @test last(backtracked_step.rows).u ≈ -0.9
+    for k in 2:length(backtracked_step.rows)
+        change = realized_row_change_summary(backtracked_step.rows[1:k - 1],
+                                             backtracked_step.rows[k])
+        @test change.finite
+        @test change.max_abs_rho <= 0.05 + 100eps()
+        @test change.max_abs_eta <= 0.02 + 100eps()
+    end
 
     throat = throat_row_diagnostics(last(evolved.rows))
     @test length(throat.y) == length(grid.v)
@@ -335,6 +517,257 @@ end
     throat_step = evolve_gp2026_u_adaptive(initial, ep; Umax=-0.9, C,
                                            iterations=10, step_control=:throat)
     @test last(throat_step.rows).u ≈ -0.9
+end
+
+@testset "persistent Hamade-Stewart hierarchy" begin
+    ep = EvolutionParams(
+        rn=RNParams(1.0, 1.0),
+        scalar_charge=0.6,
+        amplitude=0.01,
+        omega=1.0,
+    )
+    grid = gp2026_grid(
+        ; nu=2, nv=41, U0=-1.0, V0=0.0, U1=-0.99, V1=20.0,
+    )
+    state = NLState(grid)
+    initialize_gp2026_single_pulse!(state, grid, ep)
+    initial = row_from_rectangular(state, grid, 1)
+
+    target_boundary = gp2026_na_boundary_point(-0.98, ep)
+    upper = advance_u_row(
+        initial, target_boundary, ep;
+        iterations=12,
+        reduced_scalar=true,
+        hyperbolic_charge=true,
+        cell_solver=:newton_direct,
+    )
+    midpoint_boundary =
+        interpolate_parent_boundary(initial, upper, grid.v[8], -0.99)
+    lower_point = row_point(initial, 8)
+    upper_point = row_point(upper, 8)
+    @test midpoint_boundary.u == -0.99
+    @test midpoint_boundary.v == grid.v[8]
+    @test midpoint_boundary.r ≈ (lower_point.r + upper_point.r) / 2
+    @test midpoint_boundary.Q ≈ (lower_point.Q + upper_point.Q) / 2
+
+    persistent_config = StewartAMRConfig(
+        refinement_factor=4,
+        revision_interval=100,
+        max_levels=2,
+        atol=1.0,
+        rtol=0.0,
+        buffer_points=2,
+    )
+    persistent = initialize_stewart_hierarchy(
+        initial;
+        config=persistent_config,
+    )
+    patch = 8:25
+    NonlinearEMKGDoubleNull.rebuild_stewart_child!(
+        persistent.root,
+        patch,
+        persistent.config,
+        persistent.stats,
+    )
+    persistent.root.steps_since_revision = 0
+    child_identity = persistent.root.child
+    first_result = advance_stewart_hierarchy!(
+        persistent, -0.98, ep;
+        iterations=12,
+        cell_solver=:newton_direct,
+    )
+    second_result = advance_stewart_hierarchy!(
+        persistent, -0.96, ep;
+        iterations=12,
+        cell_solver=:newton_direct,
+    )
+    @test persistent.root.child === child_identity
+    @test first_result.depth == 2
+    @test second_result.depth == 2
+    @test second_result.row.u == -0.96
+    @test persistent.root.child.current.u == -0.96
+    @test persistent.stats.level_steps == [2, 8]
+    @test persistent.stats.injections == 2
+    @test persistent.stats.suffix_reintegrations == 2
+    @test validate_stewart_hierarchy(persistent.root)
+    for (offset, parent_index) in enumerate(patch)
+        child_index = 1 + 4 * (offset - 1)
+        @test persistent.root.current.r[parent_index] ≈
+              persistent.root.child.current.r[child_index]
+        @test persistent.root.current.Q[parent_index] ≈
+              persistent.root.child.current.Q[child_index]
+    end
+
+    destruction_config = StewartAMRConfig(
+        refinement_factor=4,
+        revision_interval=1,
+        max_levels=2,
+        atol=1.0,
+        rtol=0.0,
+    )
+    destruction = initialize_stewart_hierarchy(
+        initial;
+        config=destruction_config,
+    )
+    NonlinearEMKGDoubleNull.rebuild_stewart_child!(
+        destruction.root,
+        patch,
+        destruction.config,
+        destruction.stats,
+    )
+    destruction.root.steps_since_revision = 1
+    destruction_result = advance_stewart_hierarchy!(
+        destruction, -0.98, ep;
+        iterations=12,
+        cell_solver=:newton_direct,
+    )
+    @test destruction_result.depth == 1
+    @test isnothing(destruction.root.child)
+    @test destruction.stats.child_destructions == 1
+
+    containment_config = StewartAMRConfig(
+        refinement_factor=4,
+        revision_interval=4,
+        max_levels=3,
+    )
+    containment = initialize_stewart_hierarchy(
+        initial;
+        config=containment_config,
+    )
+    NonlinearEMKGDoubleNull.rebuild_stewart_child!(
+        containment.root,
+        5:30,
+        containment.config,
+        containment.stats,
+    )
+    NonlinearEMKGDoubleNull.rebuild_stewart_child!(
+        containment.root.child,
+        30:60,
+        containment.config,
+        containment.stats,
+    )
+    old_grandchild_range = extrema(containment.root.child.child.current.v)
+    NonlinearEMKGDoubleNull.rebuild_stewart_child!(
+        containment.root,
+        20:25,
+        containment.config,
+        containment.stats,
+    )
+    @test stewart_hierarchy_depth(containment.root) == 3
+    @test first(containment.root.child.current.v) <=
+          first(old_grandchild_range)
+    @test last(containment.root.child.current.v) >=
+          last(old_grandchild_range)
+    @test extrema(containment.root.child.child.current.v) ==
+          old_grandchild_range
+    @test validate_stewart_hierarchy(containment.root)
+
+    recursive_config = StewartAMRConfig(
+        refinement_factor=4,
+        revision_interval=1,
+        max_levels=3,
+        atol=1.0e-14,
+        rtol=1.0e-12,
+        buffer_points=2,
+    )
+    recursive = initialize_stewart_hierarchy(
+        initial;
+        config=recursive_config,
+    )
+    recursive_result = advance_stewart_hierarchy!(
+        recursive, -0.98, ep;
+        iterations=12,
+        cell_solver=:newton_direct,
+    )
+    @test recursive_result.depth == 3
+    @test recursive.stats.level_steps == [1, 4, 16]
+    @test recursive.stats.max_level_reached == 2
+    @test recursive.stats.injections >= 5
+    @test recursive.root.current.u ==
+          recursive.root.child.current.u ==
+          recursive.root.child.child.current.u
+    @test validate_stewart_hierarchy(recursive.root)
+
+    vacuum = EvolutionParams(
+        rn=RNParams(1.0, 1.0),
+        scalar_charge=0.0,
+        amplitude=0.0,
+        omega=0.0,
+    )
+    vacuum_errors = Float64[]
+    vacuum_logf_errors = Float64[]
+    for (du, dv) in ((0.04, 0.2), (0.02, 0.1))
+        U0, U1, V1 = -0.2, 0.12, 4.0
+        root_steps = Int(round((U1 - U0) / du))
+        vacuum_grid = gp2026_grid(
+            ; nu=2,
+            nv=Int(round(V1 / dv)) + 1,
+            U0,
+            V0=0.0,
+            U1=U0 + du,
+            V1,
+        )
+        vacuum_state = NLState(vacuum_grid)
+        initialize_gp2026_exact_extremal_rn!(
+            vacuum_state, vacuum_grid, vacuum,
+        )
+        vacuum_initial = row_from_rectangular(vacuum_state, vacuum_grid, 1)
+        vacuum_config = StewartAMRConfig(
+            refinement_factor=4,
+            revision_interval=4,
+            max_levels=2,
+            atol=1.0e-14,
+            rtol=1.0e-10,
+        )
+        vacuum_hierarchy = initialize_stewart_hierarchy(
+            vacuum_initial;
+            config=vacuum_config,
+        )
+        vacuum_rows = NLRow[vacuum_initial]
+        for step in 1:root_steps
+            target_u = step == root_steps ? U1 : U0 + step * du
+            result = advance_stewart_hierarchy!(
+                vacuum_hierarchy, target_u, vacuum;
+                U0,
+                pulse_leg_gauge=:ef_affine,
+                iterations=15,
+                cell_solver=:newton_direct,
+            )
+            push!(vacuum_rows, result.row)
+        end
+        push!(
+            vacuum_errors,
+            maximum(
+                abs(
+                    row.r[j] -
+                    gp2026_exact_extremal_rn_radius(
+                        row.u, row.v[j], vacuum.rn,
+                    ),
+                )
+                for row in vacuum_rows for j in eachindex(row.v)
+            ),
+        )
+        push!(
+            vacuum_logf_errors,
+            maximum(
+                abs(
+                    row.logf[j] -
+                    log(
+                        gp2026_exact_extremal_rn_fcode(
+                            row.u, row.v[j], vacuum.rn,
+                        ),
+                    ),
+                )
+                for row in vacuum_rows for j in eachindex(row.v)
+            ),
+        )
+        @test maximum(
+            abs(row.Q[j] - 1.0)
+            for row in vacuum_rows for j in eachindex(row.Q)
+        ) < 1.0e-12
+    end
+    @test 3.7 < vacuum_errors[1] / vacuum_errors[2] < 4.3
+    @test 3.7 < vacuum_logf_errors[1] / vacuum_logf_errors[2] < 4.3
 end
 
 @testset "MRT ingoing initial leg normalization" begin

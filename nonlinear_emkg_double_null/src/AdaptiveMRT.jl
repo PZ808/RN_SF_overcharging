@@ -1,4 +1,5 @@
 const NL_FIELD_NAMES = (:r, :logf, :phi_re, :phi_im, :Au, :Av, :Q)
+const DEFAULT_ROW_LTE_FIELDS = (:r, :logf, :psi_abs, :Q, :eta)
 
 """
 One nonlinear MRT slice at fixed V.
@@ -287,6 +288,23 @@ function slice_field(slice::NLSlice, field::Symbol)
     field === :Av && return slice.Av
     field === :Q && return slice.Q
     throw(ArgumentError("unknown nonlinear field: $field"))
+end
+
+function row_field(row::NLRow, field::Symbol)
+    field === :r && return row.r
+    field === :logf && return row.logf
+    field === :phi_re && return row.phi_re
+    field === :phi_im && return row.phi_im
+    field === :psi_abs &&
+        return [hypot(row.phi_re[j], row.phi_im[j]) for j in eachindex(row.v)]
+    field === :Au && return row.Au
+    field === :Av && return row.Av
+    field === :Q && return row.Q
+    field === :eta && return throat_row_diagnostics(row).eta
+    field === :rho && return throat_row_diagnostics(row).rho
+    field === :q_over_r &&
+        return [row.Q[j] / row.r[j] for j in eachindex(row.v)]
+    throw(ArgumentError("unknown nonlinear row field: $field"))
 end
 
 function slice_from_rectangular(st::NLState, g::Grid, j::Int)
@@ -920,11 +938,17 @@ function fill_northwest_boundary!(st::NLState, point::NLPoint)
 end
 
 function gp2026_na_boundary_point(U::Real, ep::EvolutionParams; U0=-1.0, V0=0.0,
-                                  M0=ep.rn.M)
+                                  M0=ep.rn.M,
+                                  pulse_leg_gauge::Symbol=:areal_affine)
     U >= U0 || throw(ArgumentError("GP2026 N_A boundary requires U >= U0"))
-    r0 = gp2026_extremal_gauge_initial_radius(U0, V0; U0, V0, M0)
-    r = gp2026_extremal_gauge_initial_radius(U, V0; U0, V0, M0)
-    fcorner = gp2026_fcorner_code(ep; U0, V0, M0)
+    require_gp2026_pulse_leg_gauge(pulse_leg_gauge)
+    r0 = gp2026_extremal_gauge_initial_radius(
+        U0, V0; U0, V0, M0, pulse_leg_gauge,
+    )
+    r = gp2026_extremal_gauge_initial_radius(
+        U, V0; U0, V0, M0, pulse_leg_gauge,
+    )
+    fcorner = gp2026_fcorner_code(ep; U0, V0, M0, pulse_leg_gauge)
     # Along N_A the scalar vanishes and f_code is constant. Integrating
     # A_V,U=-Q*f_code/(4r^2), with r_U=-1/2, gives this exact boundary value.
     Av = -ep.rn.Q0 * fcorner / 2 * (inv(r) - inv(r0))
@@ -933,7 +957,10 @@ end
 
 function advance_u_row(previous::NLRow, south::NLPoint, ep::EvolutionParams;
                        iterations::Int=5, subtract_rn_background::Bool=false,
-                       reduced_scalar::Bool=false, hyperbolic_charge::Bool=false)
+                       reduced_scalar::Bool=false, hyperbolic_charge::Bool=false,
+                       cell_solver::Symbol=:picard_log,
+                       newton_rtol=1.0e-13,
+                       newton_atol=1.0e-15)
     south.u > previous.u ||
         throw(ArgumentError("south.u must be larger than the previous row U"))
     require_same_coordinate(first(previous.v), south.v, "south V")
@@ -956,9 +983,387 @@ function advance_u_row(previous::NLRow, south::NLPoint, ep::EvolutionParams;
     for j in 1:length(previous.v)-1
         step_nonlinear_cell!(st, grid, ep, 1, j;
                              iterations, subtract_rn_background, reduced_scalar,
-                             hyperbolic_charge)
+                             hyperbolic_charge, cell_solver, newton_rtol,
+                             newton_atol)
     end
     return row_from_rectangular(st, grid, 2)
+end
+
+function row_lte_error(full_step::NLRow, half_step::NLRow;
+                       fields=DEFAULT_ROW_LTE_FIELDS,
+                       atol=1.0e-8, rtol=1.0e-6,
+                       order::Int=2)
+    full_step.v == half_step.v ||
+        throw(ArgumentError("LTE comparison rows must share the same V grid"))
+    order >= 1 || throw(ArgumentError("Richardson order must be positive"))
+    richardson = 2^order - 1
+    T = promote_type(eltype(full_step.r), eltype(half_step.r),
+                     typeof(atol), typeof(rtol))
+    error = zeros(T, length(full_step.v))
+    for field in fields
+        full_values = row_field(full_step, field)
+        half_values = row_field(half_step, field)
+        for j in eachindex(error)
+            difference = abs(full_values[j] - half_values[j]) / richardson
+            scale = convert(T, atol) +
+                    convert(T, rtol) * max(abs(full_values[j]),
+                                           abs(half_values[j]), one(T))
+            value = isfinite(difference) && isfinite(scale) && scale > 0 ?
+                    difference / scale : T(Inf)
+            error[j] = max(error[j], value)
+        end
+    end
+    return error
+end
+
+function buffered_flag_intervals(flags::AbstractVector{Bool};
+                                 buffer_points::Int=2,
+                                 cluster::Symbol=:all)
+    buffer_points >= 0 ||
+        throw(ArgumentError("buffer_points must be nonnegative"))
+    cluster in (:all, :components) ||
+        throw(ArgumentError("cluster must be :all or :components"))
+    flagged = findall(identity, flags)
+    isempty(flagged) && return UnitRange{Int}[]
+
+    function expanded_interval(first_index, last_index)
+        lo = max(firstindex(flags), first_index - buffer_points)
+        hi = min(lastindex(flags), last_index + buffer_points)
+        return lo:hi
+    end
+
+    if cluster === :all
+        return [expanded_interval(first(flagged), last(flagged))]
+    end
+
+    intervals = UnitRange{Int}[]
+    start = first(flagged)
+    stop = start
+    for index in flagged[2:end]
+        if index == stop + 1
+            stop = index
+        else
+            push!(intervals, expanded_interval(start, stop))
+            start = stop = index
+        end
+    end
+    push!(intervals, expanded_interval(start, stop))
+    return intervals
+end
+
+function row_lte_patches(row::NLRow, intervals::AbstractVector{<:UnitRange{Int}})
+    return [(
+        first_index=first(interval),
+        last_index=last(interval),
+        first_v=row.v[first(interval)],
+        last_v=row.v[last(interval)],
+        points=length(interval),
+    ) for interval in intervals]
+end
+
+"""
+Berger-Oliger-style row LTE estimate for one GP2026 `U` advance.
+
+The comparison evolves from `previous.u` to `target_u` once using the full
+step and once through the midpoint using two half steps. The returned `error`
+is a Richardson-scaled max norm over the selected fields at each `V` point.
+Flagged points are buffered and clustered into candidate refinement patches.
+This is the first BO layer: it supplies error flags/patches but does not yet
+maintain a nested fine-grid hierarchy or inject fine patch data downstream.
+"""
+function berger_oliger_row_lte(previous::NLRow, target_u::Real,
+                               ep::EvolutionParams;
+                               U0=previous.u, V0=first(previous.v),
+                               M0=ep.rn.M,
+                               pulse_leg_gauge::Symbol=:areal_affine,
+                               iterations::Int=10,
+                               hyperbolic_charge::Bool=true,
+                               cell_solver::Symbol=:picard_log,
+                               newton_rtol=1.0e-13,
+                               newton_atol=1.0e-15,
+                               fields=DEFAULT_ROW_LTE_FIELDS,
+                               atol=1.0e-8,
+                               rtol=1.0e-6,
+                               order::Int=2,
+                               buffer_points::Int=2,
+                               cluster::Symbol=:all)
+    target_u > previous.u ||
+        throw(ArgumentError("target_u must exceed previous row U"))
+    midpoint_u = (previous.u + target_u) / 2
+    midpoint_south = gp2026_na_boundary_point(
+        midpoint_u, ep; U0, V0, M0, pulse_leg_gauge,
+    )
+    target_south = gp2026_na_boundary_point(
+        target_u, ep; U0, V0, M0, pulse_leg_gauge,
+    )
+    full = advance_u_row(previous, target_south, ep;
+                         iterations, reduced_scalar=true, hyperbolic_charge,
+                         cell_solver, newton_rtol, newton_atol)
+    midpoint = advance_u_row(previous, midpoint_south, ep;
+                             iterations, reduced_scalar=true, hyperbolic_charge,
+                             cell_solver, newton_rtol, newton_atol)
+    half = advance_u_row(midpoint, target_south, ep;
+                         iterations, reduced_scalar=true, hyperbolic_charge,
+                         cell_solver, newton_rtol, newton_atol)
+    error = row_lte_error(full, half; fields, atol, rtol, order)
+    flags = [value > one(value) for value in error]
+    intervals = buffered_flag_intervals(flags; buffer_points, cluster)
+    return (
+        accepted=all(value <= one(value) for value in error),
+        target_u=target_u,
+        midpoint_u=midpoint_u,
+        full=full,
+        midpoint=midpoint,
+        refined=half,
+        error=error,
+        max_error=maximum(error),
+        flags=flags,
+        intervals=intervals,
+        patches=row_lte_patches(half, intervals),
+    )
+end
+
+function row_point(row::NLRow, index::Int)
+    index in eachindex(row.v) || throw(BoundsError(row.v, index))
+    return NLPoint(row.u, row.v[index], row.r[index], row.logf[index],
+                   row.phi_re[index], row.phi_im[index], row.Au[index],
+                   row.Av[index], row.Q[index])
+end
+
+function interpolate_row_values(coordinates::AbstractVector{<:Real},
+                                values::AbstractVector{<:Real},
+                                new_coordinates::AbstractVector{<:Real})
+    length(coordinates) == length(values) ||
+        throw(ArgumentError("interpolation arrays must have equal length"))
+    require_strictly_increasing(coordinates, "coordinates")
+    return [begin
+        index = searchsortedfirst(coordinates, coordinate)
+        if index <= length(coordinates) && coordinates[index] == coordinate
+            values[index]
+        else
+            cell = clamp(searchsortedlast(coordinates, coordinate),
+                         firstindex(coordinates), lastindex(coordinates) - 1)
+            local_polynomial_value(coordinates, values, coordinate, cell)
+        end
+    end for coordinate in new_coordinates]
+end
+
+function interpolate_row(row::NLRow, new_v::AbstractVector{<:Real})
+    require_strictly_increasing(new_v, "new_v")
+    first(new_v) >= first(row.v) && last(new_v) <= last(row.v) ||
+        throw(ArgumentError("new V grid must lie inside the row V range"))
+    return NLRow(
+        row.u,
+        new_v,
+        interpolate_row_values(row.v, row.r, new_v),
+        interpolate_row_values(row.v, row.logf, new_v),
+        interpolate_row_values(row.v, row.phi_re, new_v),
+        interpolate_row_values(row.v, row.phi_im, new_v),
+        interpolate_row_values(row.v, row.Au, new_v),
+        interpolate_row_values(row.v, row.Av, new_v),
+        interpolate_row_values(row.v, row.Q, new_v),
+    )
+end
+
+function normalized_patch_interval(interval::UnitRange{Int}, point_count::Int)
+    point_count >= 2 || throw(ArgumentError("row needs at least two V points"))
+    first(interval) >= 1 && last(interval) <= point_count ||
+        throw(BoundsError(1:point_count, interval))
+    if length(interval) >= 2
+        return interval
+    elseif first(interval) < point_count
+        return first(interval):(first(interval) + 1)
+    else
+        return (first(interval) - 1):first(interval)
+    end
+end
+
+function refined_v_patch_grid(v::AbstractVector{<:Real},
+                              interval::UnitRange{Int};
+                              refinement_factor::Int=4)
+    refinement_factor >= 2 ||
+        throw(ArgumentError("refinement_factor must be at least 2"))
+    patch = normalized_patch_interval(interval, length(v))
+    T = eltype(v)
+    fine_v = T[]
+    sizehint!(fine_v, (length(patch) - 1) * refinement_factor + 1)
+    for index in first(patch):last(patch)-1
+        left = v[index]
+        right = v[index + 1]
+        for subcell in 0:refinement_factor-1
+            fraction = subcell / refinement_factor
+            push!(fine_v, (one(fraction) - fraction) * left + fraction * right)
+        end
+    end
+    push!(fine_v, v[last(patch)])
+    return fine_v
+end
+
+function inject_row_patch(parent::NLRow, child::NLRow,
+                          interval::UnitRange{Int};
+                          refinement_factor::Int=4)
+    parent.u == child.u ||
+        throw(ArgumentError("parent and child rows must share U"))
+    patch = normalized_patch_interval(interval, length(parent.v))
+    expected_child_points = (length(patch) - 1) * refinement_factor + 1
+    length(child.v) == expected_child_points ||
+        throw(ArgumentError("child row has the wrong number of V points"))
+    parent.v[first(patch)] == first(child.v) &&
+        parent.v[last(patch)] == last(child.v) ||
+        throw(ArgumentError("child row must span the parent patch interval"))
+
+    fields = Dict(
+        :r => copy(parent.r),
+        :logf => copy(parent.logf),
+        :phi_re => copy(parent.phi_re),
+        :phi_im => copy(parent.phi_im),
+        :Au => copy(parent.Au),
+        :Av => copy(parent.Av),
+        :Q => copy(parent.Q),
+    )
+    for (offset, parent_index) in enumerate(patch)
+        child_index = 1 + (offset - 1) * refinement_factor
+        for field in NL_FIELD_NAMES
+            fields[field][parent_index] = row_field(child, field)[child_index]
+        end
+    end
+    return NLRow(parent.u, parent.v, fields[:r], fields[:logf],
+                 fields[:phi_re], fields[:phi_im], fields[:Au], fields[:Av],
+                 fields[:Q])
+end
+
+function row_suffix(row::NLRow, first_index::Int)
+    first_index in eachindex(row.v) || throw(BoundsError(row.v, first_index))
+    indices = first_index:lastindex(row.v)
+    return NLRow(row.u, row.v[indices], row.r[indices], row.logf[indices],
+                 row.phi_re[indices], row.phi_im[indices], row.Au[indices],
+                 row.Av[indices], row.Q[indices])
+end
+
+function replace_row_suffix(parent::NLRow, suffix::NLRow, first_index::Int)
+    parent.u == suffix.u || throw(ArgumentError("suffix must share parent U"))
+    parent.v[first_index:end] == suffix.v ||
+        throw(ArgumentError("suffix V grid does not match parent"))
+    fields = Dict(
+        :r => copy(parent.r),
+        :logf => copy(parent.logf),
+        :phi_re => copy(parent.phi_re),
+        :phi_im => copy(parent.phi_im),
+        :Au => copy(parent.Au),
+        :Av => copy(parent.Av),
+        :Q => copy(parent.Q),
+    )
+    for field in NL_FIELD_NAMES
+        fields[field][first_index:end] .= row_field(suffix, field)
+    end
+    return NLRow(parent.u, parent.v, fields[:r], fields[:logf],
+                 fields[:phi_re], fields[:phi_im], fields[:Au], fields[:Av],
+                 fields[:Q])
+end
+
+function reintegrate_row_suffix(lower::NLRow, target::NLRow,
+                                first_index::Int,
+                                ep::EvolutionParams;
+                                iterations::Int=10,
+                                hyperbolic_charge::Bool=true,
+                                cell_solver::Symbol=:picard_log,
+                                newton_rtol=1.0e-13,
+                                newton_atol=1.0e-15)
+    lower.v == target.v ||
+        throw(ArgumentError("lower and target rows must share the V grid"))
+    target.u > lower.u ||
+        throw(ArgumentError("target U must exceed lower row U"))
+    first_index in eachindex(target.v) ||
+        throw(BoundsError(target.v, first_index))
+    first_index == lastindex(target.v) && return target
+    lower_suffix = row_suffix(lower, first_index)
+    boundary = row_point(target, first_index)
+    corrected_suffix = advance_u_row(lower_suffix, boundary, ep;
+                                     iterations, reduced_scalar=true,
+                                     hyperbolic_charge, cell_solver,
+                                     newton_rtol, newton_atol)
+    return replace_row_suffix(target, corrected_suffix, first_index)
+end
+
+"""
+Evolve, inject, and synchronize one Berger-Oliger child `V` patch.
+
+The child uses the same two half-`U` steps as the LTE estimate and refines the
+selected parent `V` interval by `refinement_factor`. Fine midpoint and target
+data are injected at coincident parent points. When `reintegrate=true`, the
+coarse midpoint and target rows are re-evolved from the patch endpoint to the
+outer boundary, following the Hamade-Stewart downstream synchronization step.
+This is a single-level, single-patch correction; recursive child levels are
+not yet maintained.
+"""
+function berger_oliger_refine_patch(previous::NLRow, estimate,
+                                    ep::EvolutionParams;
+                                    interval=nothing,
+                                    patch_index::Int=1,
+                                    refinement_factor::Int=4,
+                                    iterations::Int=10,
+                                    hyperbolic_charge::Bool=true,
+                                    cell_solver::Symbol=:picard_log,
+                                    newton_rtol=1.0e-13,
+                                    newton_atol=1.0e-15,
+                                    reintegrate::Bool=true)
+    selected_interval = if isnothing(interval)
+        isempty(estimate.intervals) &&
+            throw(ArgumentError("LTE estimate contains no flagged patches"))
+        patch_index in eachindex(estimate.intervals) ||
+            throw(BoundsError(estimate.intervals, patch_index))
+        estimate.intervals[patch_index]
+    else
+        interval
+    end
+    patch = normalized_patch_interval(selected_interval, length(previous.v))
+    fine_v = refined_v_patch_grid(previous.v, patch; refinement_factor)
+    previous_child = interpolate_row(previous, fine_v)
+    midpoint_boundary = row_point(estimate.midpoint, first(patch))
+    target_boundary = row_point(estimate.refined, first(patch))
+    child_midpoint = advance_u_row(previous_child, midpoint_boundary, ep;
+                                   iterations, reduced_scalar=true,
+                                   hyperbolic_charge, cell_solver,
+                                   newton_rtol, newton_atol)
+    child_target = advance_u_row(child_midpoint, target_boundary, ep;
+                                 iterations, reduced_scalar=true,
+                                 hyperbolic_charge, cell_solver,
+                                 newton_rtol, newton_atol)
+
+    parent_midpoint = inject_row_patch(estimate.midpoint, child_midpoint, patch;
+                                       refinement_factor)
+    parent_target = inject_row_patch(estimate.refined, child_target, patch;
+                                     refinement_factor)
+    if reintegrate && last(patch) < length(previous.v)
+        parent_midpoint = reintegrate_row_suffix(
+            previous, parent_midpoint, last(patch), ep;
+            iterations, hyperbolic_charge, cell_solver, newton_rtol,
+            newton_atol,
+        )
+        parent_target = reintegrate_row_suffix(
+            parent_midpoint, parent_target, last(patch), ep;
+            iterations, hyperbolic_charge, cell_solver, newton_rtol,
+            newton_atol,
+        )
+    end
+
+    correction = row_lte_error(
+        estimate.refined, parent_target;
+        fields=DEFAULT_ROW_LTE_FIELDS, atol=1.0, rtol=0.0, order=1,
+    )
+    return (
+        interval=patch,
+        refinement_factor=refinement_factor,
+        fine_v=fine_v,
+        previous_child=previous_child,
+        child_midpoint=child_midpoint,
+        child_target=child_target,
+        parent_midpoint=parent_midpoint,
+        parent_target=parent_target,
+        correction=correction,
+        max_correction=maximum(correction),
+        reintegrated=reintegrate && last(patch) < length(previous.v),
+    )
 end
 
 function geometric_row_du(rows::AbstractVector{<:NLRow}, C::Real)
@@ -1117,8 +1522,12 @@ function advance_u_row_backtracked(rows::AbstractVector{<:NLRow},
                                    target_u::Real,
                                    ep::EvolutionParams;
                                    U0, V0, M0,
+                                   pulse_leg_gauge::Symbol=:areal_affine,
                                    iterations::Int,
                                    hyperbolic_charge::Bool,
+                                   cell_solver::Symbol=:picard_log,
+                                   newton_rtol=1.0e-13,
+                                   newton_atol=1.0e-15,
                                    backtrack_factor,
                                    max_backtracks::Int,
                                    min_backtrack_du,
@@ -1139,10 +1548,13 @@ function advance_u_row_backtracked(rows::AbstractVector{<:NLRow},
     last_candidate = nothing
     last_change = nothing
     for attempt in 0:max_backtracks
-        south = gp2026_na_boundary_point(trial_u, ep; U0, V0, M0)
+        south = gp2026_na_boundary_point(
+            trial_u, ep; U0, V0, M0, pulse_leg_gauge,
+        )
         candidate = advance_u_row(current, south, ep;
                                   iterations, reduced_scalar=true,
-                                  hyperbolic_charge)
+                                  hyperbolic_charge, cell_solver,
+                                  newton_rtol, newton_atol)
         change = realized_row_change_summary(rows, candidate)
         if row_change_accepted(change; max_realized_delta_rho,
                                max_realized_delta_eta,
@@ -1177,6 +1589,75 @@ function advance_u_row_backtracked(rows::AbstractVector{<:NLRow},
     )
 end
 
+function advance_u_row_berger_oliger(previous::NLRow,
+                                     target_u::Real,
+                                     ep::EvolutionParams;
+                                     U0, V0, M0,
+                                     pulse_leg_gauge::Symbol=:areal_affine,
+                                     iterations::Int,
+                                     hyperbolic_charge::Bool,
+                                     cell_solver::Symbol=:picard_log,
+                                     newton_rtol=1.0e-13,
+                                     newton_atol=1.0e-15,
+                                     fields=DEFAULT_ROW_LTE_FIELDS,
+                                     atol=1.0e-8,
+                                     rtol=1.0e-5,
+                                     order::Int=2,
+                                     buffer_points::Int=4,
+                                     cluster::Symbol=:all,
+                                     refinement_factor::Int=4,
+                                     reintegrate::Bool=true)
+    target_u > previous.u ||
+        throw(ArgumentError("target U must exceed previous row U"))
+    midpoint_u = (previous.u + target_u) / 2
+    if !(previous.u < midpoint_u < target_u)
+        south = gp2026_na_boundary_point(
+            target_u, ep; U0, V0, M0, pulse_leg_gauge,
+        )
+        row = advance_u_row(previous, south, ep;
+                            iterations, reduced_scalar=true,
+                            hyperbolic_charge, cell_solver,
+                            newton_rtol, newton_atol)
+        return (
+            row=row,
+            estimate=nothing,
+            correction=nothing,
+            patched=false,
+            precision_fallback=true,
+        )
+    end
+
+    estimate = berger_oliger_row_lte(
+        previous, target_u, ep;
+        U0, V0, M0, pulse_leg_gauge, iterations, hyperbolic_charge,
+        cell_solver, newton_rtol, newton_atol, fields, atol, rtol, order,
+        buffer_points, cluster,
+    )
+    if isempty(estimate.intervals)
+        return (
+            row=estimate.refined,
+            estimate=estimate,
+            correction=nothing,
+            patched=false,
+            precision_fallback=false,
+        )
+    end
+
+    correction = berger_oliger_refine_patch(
+        previous, estimate, ep;
+        patch_index=1, refinement_factor, iterations,
+        hyperbolic_charge, cell_solver, newton_rtol, newton_atol,
+        reintegrate,
+    )
+    return (
+        row=correction.parent_target,
+        estimate=estimate,
+        correction=correction,
+        patched=true,
+        precision_fallback=false,
+    )
+end
+
 """
 Evolve GP2026 initial data with a row-wise `U` step criterion.
 
@@ -1196,12 +1677,33 @@ step through smaller stored substeps, which is useful when the paper macro
 step is too large for the local cell solve. Setting `backtrack=true` adds a
 candidate-row accept/reject loop: if the realized future-row changes in
 `rho`, `eta`, `r`, `logf`, or `H=-4r_Ur_V/f` exceed the requested caps, the
-trial `Delta U` is reduced and the row is recomputed.
+trial `Delta U` is reduced and the row is recomputed. Setting `bo_amr=true`
+instead advances each stored row through the physical LTE estimate and, when
+flagged, one synchronized fine `V` patch. This first driver integration does
+not yet combine BO correction with backtracking.
+
+With `bo_amr=true`, the driver uses the persistent simplified Hamade-Stewart
+hierarchy implemented in `StewartAMR.jl`: one buffered child patch per level,
+factor-four refinement in both null directions by default, recursive
+subcycling, finest-first injection, and downstream `V` reintegration. The
+older disposable single-patch operation remains available separately through
+`advance_u_row_berger_oliger`.
+
+The GP production defaults are `pulse_leg_gauge=:areal_affine` and
+`cell_solver=:newton_direct`. The latter solves the coupled seven-field cell
+system using the direct `f_UV` equation and stores `log(f)` only after the
+positive Newton solution has been accepted. The former
+`:ef_affine`/`:picard_log` implementation remains selectable for regression
+comparisons.
 """
 function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6, C=0.6,
                                   U0=initial.u, V0=first(initial.v), M0=ep.rn.M,
+                                  pulse_leg_gauge::Symbol=:areal_affine,
                                   iterations::Int=10, max_rows::Int=100_000,
                                   hyperbolic_charge::Bool=true,
+                                  cell_solver::Symbol=:newton_direct,
+                                  newton_rtol=1.0e-13,
+                                  newton_atol=1.0e-15,
                                   step_control::Symbol=:local,
                                   max_delta_rho=0.25,
                                   max_delta_eta=0.025,
@@ -1216,9 +1718,23 @@ function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6,
                                   max_realized_delta_eta=max_delta_eta,
                                   max_realized_delta_r=Inf,
                                   max_realized_delta_logf=Inf,
-                                  max_realized_delta_H=Inf)
+                                  max_realized_delta_H=Inf,
+                                  bo_amr::Bool=false,
+                                  bo_fields=DEFAULT_ROW_LTE_FIELDS,
+                                  bo_atol=1.0e-8,
+                                  bo_rtol=1.0e-5,
+                                  bo_order::Int=2,
+                                  bo_buffer_points::Int=4,
+                                  bo_cluster::Symbol=:all,
+                                  bo_refinement_factor::Int=4,
+                                  bo_revision_interval::Int=4,
+                                  bo_max_levels::Int=4,
+                                  bo_reintegrate::Bool=true)
     C > 0 || throw(ArgumentError("C must be positive"))
     substep_C > 0 || throw(ArgumentError("substep_C must be positive"))
+    require_gp2026_pulse_leg_gauge(pulse_leg_gauge)
+    cell_solver in (:picard_log, :newton_direct) ||
+        throw(ArgumentError("cell_solver must be :picard_log or :newton_direct"))
     Umax > initial.u || throw(ArgumentError("Umax must exceed initial U"))
     max_rows >= 2 || throw(ArgumentError("max_rows must be at least 2"))
     max_substeps_per_row >= 1 ||
@@ -1227,6 +1743,28 @@ function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6,
         throw(ArgumentError("step_control must be :outer, :max_row, :geometric, :throat, :eta, or :local"))
     substep_control in (:none, GP2026_ROW_STEP_CONTROLS...) ||
         throw(ArgumentError("substep_control must be :none, :outer, :max_row, :geometric, :throat, :eta, or :local"))
+    bo_amr && backtrack &&
+        throw(ArgumentError("bo_amr and backtrack cannot be combined yet"))
+    bo_amr && bo_cluster !== :all &&
+        throw(ArgumentError(
+            "the simplified Stewart hierarchy supports one cluster per level",
+        ))
+    bo_hierarchy = if bo_amr
+        config = StewartAMRConfig(
+            refinement_factor=bo_refinement_factor,
+            revision_interval=bo_revision_interval,
+            max_levels=bo_max_levels,
+            fields=bo_fields,
+            atol=bo_atol,
+            rtol=bo_rtol,
+            order=bo_order,
+            buffer_points=bo_buffer_points,
+            reintegrate=bo_reintegrate,
+        )
+        initialize_stewart_hierarchy(initial; config)
+    else
+        nothing
+    end
     rows = [initial]
     while last(rows).u < Umax && length(rows) < max_rows
         previous = last(rows)
@@ -1237,10 +1775,29 @@ function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6,
         target_u > previous.u || break
 
         if substep_control === :none
-            if backtrack
+            if bo_amr
+                result = advance_stewart_hierarchy!(
+                    bo_hierarchy,
+                    target_u,
+                    ep;
+                    U0,
+                    V0,
+                    M0,
+                    pulse_leg_gauge,
+                    iterations,
+                    hyperbolic_charge,
+                    cell_solver,
+                    newton_rtol,
+                    newton_atol,
+                )
+                push!(rows, result.row)
+                finite_nlrow(result.row) || break
+            elseif backtrack
                 result = advance_u_row_backtracked(
                     rows, target_u, ep;
-                    U0, V0, M0, iterations, hyperbolic_charge,
+                    U0, V0, M0, pulse_leg_gauge, iterations,
+                    hyperbolic_charge, cell_solver, newton_rtol,
+                    newton_atol,
                     backtrack_factor, max_backtracks, min_backtrack_du,
                     max_realized_delta_rho, max_realized_delta_eta,
                     max_realized_delta_r, max_realized_delta_logf,
@@ -1249,9 +1806,13 @@ function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6,
                 result.accepted || break
                 push!(rows, result.row)
             else
-                south = gp2026_na_boundary_point(target_u, ep; U0, V0, M0)
+                south = gp2026_na_boundary_point(
+                    target_u, ep; U0, V0, M0, pulse_leg_gauge,
+                )
                 next = advance_u_row(previous, south, ep;
-                                     iterations, reduced_scalar=true, hyperbolic_charge)
+                                     iterations, reduced_scalar=true,
+                                     hyperbolic_charge, cell_solver,
+                                     newton_rtol, newton_atol)
                 push!(rows, next)
                 finite_nlrow(next) || break
             end
@@ -1264,10 +1825,29 @@ function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6,
                 isfinite(substep) && substep > 0 || break
                 next_u = min(target_u, current.u + substep)
                 next_u > current.u || break
-                if backtrack
+                if bo_amr
+                    result = advance_stewart_hierarchy!(
+                        bo_hierarchy,
+                        next_u,
+                        ep;
+                        U0,
+                        V0,
+                        M0,
+                        pulse_leg_gauge,
+                        iterations,
+                        hyperbolic_charge,
+                        cell_solver,
+                        newton_rtol,
+                        newton_atol,
+                    )
+                    push!(rows, result.row)
+                    finite_nlrow(result.row) || break
+                elseif backtrack
                     result = advance_u_row_backtracked(
                         rows, next_u, ep;
-                        U0, V0, M0, iterations, hyperbolic_charge,
+                        U0, V0, M0, pulse_leg_gauge, iterations,
+                        hyperbolic_charge, cell_solver, newton_rtol,
+                        newton_atol,
                         backtrack_factor, max_backtracks, min_backtrack_du,
                         max_realized_delta_rho, max_realized_delta_eta,
                         max_realized_delta_r, max_realized_delta_logf,
@@ -1276,10 +1856,13 @@ function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6,
                     result.accepted || break
                     push!(rows, result.row)
                 else
-                    south = gp2026_na_boundary_point(next_u, ep; U0, V0, M0)
+                    south = gp2026_na_boundary_point(
+                        next_u, ep; U0, V0, M0, pulse_leg_gauge,
+                    )
                     next = advance_u_row(current, south, ep;
                                          iterations, reduced_scalar=true,
-                                         hyperbolic_charge)
+                                         hyperbolic_charge, cell_solver,
+                                         newton_rtol, newton_atol)
                     push!(rows, next)
                     finite_nlrow(next) || break
                 end

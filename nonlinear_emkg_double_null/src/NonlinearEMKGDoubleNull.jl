@@ -6,6 +6,7 @@ include("EinsteinSector.jl")
 include("StressEnergy.jl")
 include("NonlinearEMKG.jl")
 include("AdaptiveMRT.jl")
+include("StewartAMR.jl")
 include("InitialData.jl")
 include("Evolution.jl")
 include("Diagnostics.jl")
@@ -21,6 +22,8 @@ export initialize_mrt2013_charged_outgoing_wave!
 export gp2026_single_pulse_envelope, gp2026_extremal_gauge_initial_radius
 export gp2026_extremal_gauge_ru, gp2026_extremal_gauge_rv, gp2026_fcorner_code
 export initialize_gp2026_single_pulse!
+export gp2026_exact_extremal_rn_radius, gp2026_exact_extremal_rn_fcode
+export initialize_gp2026_exact_extremal_rn!
 export mrt2013_initial_rv_profile
 export charged_scalar_rhs, charged_reduced_scalar_rhs, charged_reduced_charge_rhs
 export metric_rhs, maxwell_rhs
@@ -34,6 +37,15 @@ export throat_row_diagnostics, throat_matching_candidate, throat_matching_band
 export rho_lapse_diagnostics, throat_boundary_sample, throat_boundary_series, range_width
 export throat_row_du, eta_row_du, geometric_row_du, gp2026_row_step_du
 export realized_row_change_summary
+export row_lte_error, buffered_flag_intervals, row_lte_patches
+export berger_oliger_row_lte
+export row_point, interpolate_row, refined_v_patch_grid
+export inject_row_patch, reintegrate_row_suffix, berger_oliger_refine_patch
+export advance_u_row_berger_oliger
+export StewartAMRConfig, StewartAMRStats, StewartAMRLevel, StewartAMRHierarchy
+export initialize_stewart_hierarchy, advance_stewart_hierarchy!
+export stewart_hierarchy_depth, stewart_hierarchy_intervals
+export validate_stewart_hierarchy, interpolate_parent_boundary
 export interpolate_slice, refine_u_grid, refine_slice, truncate_slice
 export refine_slice_constrained
 export spacing_refinement_flags, variation_refinement_flags, point_splitting_flags

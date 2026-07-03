@@ -712,16 +712,26 @@ negative controls for the most plausible paper-copying mistakes:
 
 The `Q_UV` residual is meaningful for the GP2026 production mode
 `hyperbolic_charge=true`; in constraint-marched runs it is just measured
-against zero.
+against zero. For `cell_solver=:newton_direct`, `max_abs_cell_residual`
+measures the unscaled seven-equation algebraic residual and `max_abs_f_uv`
+measures the direct lapse equation. This avoids interpreting roundoff divided
+by `Delta U*Delta V` as a truncation error.
 """
 function cell_equation_residual_summary(st::NLState, g::Grid,
                                         ep::EvolutionParams;
                                         reduced_scalar::Bool=false,
                                         hyperbolic_charge::Bool=false,
                                         subtract_rn_background::Bool=false,
+                                        cell_solver::Symbol=:picard_log,
                                         interior_only::Bool=false)
     hyperbolic_charge && !reduced_scalar &&
         throw(ArgumentError("hyperbolic charge residual requires reduced_scalar=true"))
+    cell_solver in (:picard_log, :newton_direct) ||
+        throw(ArgumentError("cell_solver must be :picard_log or :newton_direct"))
+    cell_solver === :newton_direct && subtract_rn_background &&
+        throw(ArgumentError(
+            "RN background subtraction is not implemented for :newton_direct",
+        ))
     nu, nv = checked_grid_size(st, g)
     nu >= 2 && nv >= 2 ||
         throw(ArgumentError("cell residuals need at least one cell"))
@@ -740,7 +750,9 @@ function cell_equation_residual_summary(st::NLState, g::Grid,
                      typeof(ep.scalar_charge))
     maxima = Dict{Symbol,T}(
         :r_uv => zero(T),
+        :f_uv => zero(T),
         :logf_uv => zero(T),
+        :cell_residual => zero(T),
         :logf_gp_literal => zero(T),
         :logf_coulomb2 => zero(T),
         :psi_re_uv => zero(T),
@@ -779,8 +791,10 @@ function cell_equation_residual_summary(st::NLState, g::Grid,
                               st.Q[i, j + 1], st.Q[i + 1, j + 1]
 
         r = corner_average(r00, r10, r01, r11)
+        f00, f10, f01, f11 = exp(lf00), exp(lf10), exp(lf01), exp(lf11)
         lf = corner_average(lf00, lf10, lf01, lf11)
-        f = exp(lf)
+        f = cell_solver === :newton_direct ?
+            corner_average(f00, f10, f01, f11) : exp(lf)
         pr = corner_average(pr00, pr10, pr01, pr11)
         pii = corner_average(pi00, pi10, pi01, pi11)
         au = corner_average(au00, au10, au01, au11)
@@ -789,6 +803,8 @@ function cell_equation_residual_summary(st::NLState, g::Grid,
 
         ru = corner_du(r00, r10, r01, r11, du)
         rv = corner_dv(r00, r10, r01, r11, dv)
+        fu = corner_du(f00, f10, f01, f11, du)
+        fv = corner_dv(f00, f10, f01, f11, dv)
         pru = corner_du(pr00, pr10, pr01, pr11, du)
         prv = corner_dv(pr00, pr10, pr01, pr11, dv)
         piu = corner_du(pi00, pi10, pi01, pi11, du)
@@ -805,6 +821,7 @@ function cell_equation_residual_summary(st::NLState, g::Grid,
             stress_energy(r, f, q, pr, pii, pru, prv, piu, piv, au, av, e)
         end
         ruv, lfuv = metric_rhs(r, f, ru, rv, q, source)
+        _, fuv = direct_lapse_rhs(r, f, fu, fv, ru, rv, q, source)
         pruv, piuv = if reduced_scalar
             charged_reduced_scalar_rhs(r, ruv, pru, prv, piu, piv,
                                        pr, pii, au, av, e)
@@ -822,6 +839,7 @@ function cell_equation_residual_summary(st::NLState, g::Grid,
                                rn_background_update_defect(g, ep, i, j, du, dv) :
                                (zero(du), zero(du))
         ruv_observed = (r11 - r10 - r01 + r00) / (du * dv)
+        fuv_observed = (f11 - f10 - f01 + f00) / (du * dv)
         lfuv_observed = (lf11 - lf10 - lf01 + lf00) / (du * dv)
         pruv_observed = (pr11 - pr10 - pr01 + pr00) / (du * dv)
         piuv_observed = (pi11 - pi10 - pi01 + pi00) / (du * dv)
@@ -833,6 +851,7 @@ function cell_equation_residual_summary(st::NLState, g::Grid,
                         2 * q^2 * f / r^4 - source.scalar_logf_source
 
         update!(:r_uv, ruv_observed - ruv + r_defect / (du * dv))
+        update!(:f_uv, fuv_observed - fuv)
         update!(:logf_uv, lfuv_observed - lfuv + lf_defect / (du * dv))
         update!(:logf_gp_literal,
                 lfuv_observed - lfuv_gp_literal + lf_defect / (du * dv))
@@ -847,12 +866,38 @@ function cell_equation_residual_summary(st::NLState, g::Grid,
         update!(:av_u, av_u - avu)
         update!(:quasilorenz, au_v + av_u)
         update!(:faraday, av_u - au_v + q * f / (2r^2))
+        update!(
+            :cell_residual,
+            (r11 - r10 - r01 + r00) - du * dv * ruv + r_defect,
+        )
+        lapse_cell_residual = if cell_solver === :newton_direct
+            (f11 - f10 - f01 + f00) - du * dv * fuv
+        else
+            (lf11 - lf10 - lf01 + lf00) - du * dv * lfuv + lf_defect
+        end
+        update!(:cell_residual, lapse_cell_residual)
+        update!(
+            :cell_residual,
+            (pr11 - pr10 - pr01 + pr00) - du * dv * pruv,
+        )
+        update!(
+            :cell_residual,
+            (pi11 - pi10 - pi01 + pi00) - du * dv * piuv,
+        )
+        update!(:cell_residual, 2dv * (au_v - auv))
+        update!(:cell_residual, 2du * (av_u - avu))
+        charge_cell_residual = hyperbolic_charge ?
+                               (q11 - q10 - q01 + q00) - du * dv * quv :
+                               (q11 - q01) - du * q_u_source
+        update!(:cell_residual, charge_cell_residual)
         cells += 1
     end
 
     return (
         cells=cells,
+        max_abs_cell_residual=maxima[:cell_residual],
         max_abs_r_uv=maxima[:r_uv],
+        max_abs_f_uv=maxima[:f_uv],
         max_abs_logf_uv=maxima[:logf_uv],
         max_abs_logf_gp_literal=maxima[:logf_gp_literal],
         max_abs_logf_coulomb2=maxima[:logf_coulomb2],

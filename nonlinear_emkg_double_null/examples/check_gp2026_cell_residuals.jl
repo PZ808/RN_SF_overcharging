@@ -24,7 +24,8 @@ function format_value(value)
     return string(value)
 end
 
-function run_level(; q0, amplitude, U1, V1, du, dv, iterations)
+function run_level(; q0, amplitude, U1, V1, du, dv, iterations,
+                   cell_solver, pulse_leg_gauge)
     ep = EvolutionParams(
         rn=RNParams(1.0, q0),
         scalar_charge=0.6 / q0,
@@ -35,11 +36,14 @@ function run_level(; q0, amplitude, U1, V1, du, dv, iterations)
     nv = Int(round(V1 / dv)) + 1
     grid = gp2026_grid(; nu, nv, U0=-1.0, V0=0.0, U1, V1)
     state = NLState(grid)
-    initialize_gp2026_single_pulse!(state, grid, ep)
+    initialize_gp2026_single_pulse!(
+        state, grid, ep; pulse_leg_gauge,
+    )
     evolve_nonlinear!(state, grid, ep; iterations, reduced_scalar=true,
-                      hyperbolic_charge=true)
+                      hyperbolic_charge=true, cell_solver)
     summary = cell_equation_residual_summary(
         state, grid, ep; reduced_scalar=true, hyperbolic_charge=true,
+        cell_solver,
     )
     return merge((du=du, dv=dv, nu=nu, nv=nv), summary)
 end
@@ -47,7 +51,9 @@ end
 function print_table(rows)
     headers = (
         "level", "Delta_U", "Delta_V", "nu", "nv", "cells",
+        "cell_residual",
         "r_UV", "rate_r",
+        "f_UV", "rate_f",
         "logf_UV", "rate_logf",
         "psi_re_UV", "rate_psi_re",
         "psi_im_UV", "rate_psi_im",
@@ -64,6 +70,8 @@ function print_table(rows)
         rate_logf = isnothing(previous) ? nothing :
                     refinement_rate(previous.max_abs_logf_uv,
                                     row.max_abs_logf_uv)
+        rate_f = isnothing(previous) ? nothing :
+                 refinement_rate(previous.max_abs_f_uv, row.max_abs_f_uv)
         rate_psi_re = isnothing(previous) ? nothing :
                       refinement_rate(previous.max_abs_psi_re_uv,
                                       row.max_abs_psi_re_uv)
@@ -74,7 +82,9 @@ function print_table(rows)
                  refinement_rate(previous.max_abs_q_uv, row.max_abs_q_uv)
         values = (
             level - 1, row.du, row.dv, row.nu, row.nv, row.cells,
+            row.max_abs_cell_residual,
             row.max_abs_r_uv, rate_r,
+            row.max_abs_f_uv, rate_f,
             row.max_abs_logf_uv, rate_logf,
             row.max_abs_psi_re_uv, rate_psi_re,
             row.max_abs_psi_im_uv, rate_psi_im,
@@ -97,17 +107,29 @@ function main()
     levels = integer_argument(5, 4)
     U1 = real_argument(6, -0.8)
     V1 = real_argument(7, 20.0)
-    iterations = integer_argument(8, 10)
+    iterations = integer_argument(8, 12)
+    cell_solver_argument = argument(9, "newton-direct")
+    cell_solver_argument in ("newton-direct", "picard-log") ||
+        throw(ArgumentError("cell solver must be newton-direct or picard-log"))
+    cell_solver = cell_solver_argument == "newton-direct" ?
+                  :newton_direct : :picard_log
+    pulse_leg_gauge_argument = argument(10, "areal-affine")
+    pulse_leg_gauge_argument in ("areal-affine", "ef-affine") ||
+        throw(ArgumentError("pulse-leg gauge must be areal-affine or ef-affine"))
+    pulse_leg_gauge = pulse_leg_gauge_argument == "areal-affine" ?
+                      :areal_affine : :ef_affine
 
     println("# GP2026 centered-cell residual audit")
     println("# Q0 = ", q0, ", eQ0 = 0.6, A0 = ", amplitude)
     println("# U range = [-1, ", U1, "], V range = [0, ", V1, "]")
-    println("# iterations = ", iterations)
+    println("# iterations = ", iterations,
+            ", cell_solver = ", cell_solver,
+            ", pulse_leg_gauge = ", pulse_leg_gauge)
     rows = [
         run_level(; q0, amplitude, U1, V1,
                   du=base_du / 2.0^level,
                   dv=base_dv / 2.0^level,
-                  iterations)
+                  iterations, cell_solver, pulse_leg_gauge)
         for level in 0:levels-1
     ]
     print_table(rows)

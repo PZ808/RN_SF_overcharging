@@ -65,6 +65,9 @@ julia --project=. examples/check_gp2026_initial_data.jl
 julia --project=. examples/check_gp2026_short_balance.jl
 julia --project=. examples/check_gp2026_long_evolution.jl
 julia --project=. examples/check_gp2026_u_refinement.jl
+julia --project=. examples/convergence_gp2026_stewart_amr.jl
+julia --project=. examples/convergence_gp2026_stewart_charge.jl
+julia --project=. examples/check_gp2026_stewart_amr.jl
 julia --project=. examples/diagnose_gp2026_nonfinite.jl
 julia --project=. -e 'using Pkg; Pkg.test()'
 ```

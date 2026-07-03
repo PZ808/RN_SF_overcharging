@@ -83,6 +83,16 @@ function run_comparison(::Type{T}) where {T<:Real}
     max_realized_delta_rho = real_argument(20, string(max_delta_rho), T)
     max_realized_delta_eta = real_argument(21, string(max_delta_eta), T)
     max_realized_delta_H = real_argument(22, "Inf", T)
+    cell_solver_argument = length(ARGS) >= 23 ? ARGS[23] : "newton-direct"
+    cell_solver_argument in ("newton-direct", "picard-log") ||
+        throw(ArgumentError("cell solver must be newton-direct or picard-log"))
+    cell_solver = cell_solver_argument == "newton-direct" ?
+                  :newton_direct : :picard_log
+    pulse_leg_gauge_argument = length(ARGS) >= 24 ? ARGS[24] : "areal-affine"
+    pulse_leg_gauge_argument in ("areal-affine", "ef-affine") ||
+        throw(ArgumentError("pulse-leg gauge must be areal-affine or ef-affine"))
+    pulse_leg_gauge = pulse_leg_gauge_argument == "areal-affine" ?
+                      :areal_affine : :ef_affine
 
     U0 = parse(T, "-1.0")
     ep = EvolutionParams(
@@ -95,7 +105,7 @@ function run_comparison(::Type{T}) where {T<:Real}
     grid = gp2026_grid(; nu=2, nv, U0, V0=zero(T),
                        U1=U0 + parse(T, "0.01"), V1=vmax)
     seed = NLState(grid)
-    initialize_gp2026_single_pulse!(seed, grid, ep)
+    initialize_gp2026_single_pulse!(seed, grid, ep; pulse_leg_gauge)
     initial = row_from_rectangular(seed, grid, 1)
     raw = evolve_gp2026_u_adaptive(initial, ep; Umax, C, iterations=10, max_rows,
                                    hyperbolic_charge, step_control, max_delta_rho,
@@ -104,7 +114,8 @@ function run_comparison(::Type{T}) where {T<:Real}
                                    backtrack_factor, max_backtracks,
                                    max_realized_delta_rho,
                                    max_realized_delta_eta,
-                                   max_realized_delta_H)
+                                   max_realized_delta_H,
+                                   cell_solver, pulse_leg_gauge)
 
     last_valid = findlast(row -> all(isfinite, row.r) && all(isfinite, row.logf) &&
                                   all(isfinite, row.phi_re) && all(isfinite, row.phi_im) &&
@@ -149,6 +160,8 @@ function run_comparison(::Type{T}) where {T<:Real}
     println("max Delta eta = ", max_delta_eta)
     println("matching rho = ", match_rho)
     println("charge evolution = ", charge_mode)
+    println("cell solver = ", cell_solver_argument)
+    println("pulse-leg gauge = ", pulse_leg_gauge_argument)
     println("step control = ", step_control_argument)
     println("substep control = ", substep_control_argument)
     println("substep C = ", substep_C)

@@ -93,6 +93,126 @@ data currently look internally consistent to the expected finite-difference
 order, and the missing trapped-surface crossing is unlikely to be fixed by a
 simple Appendix-A normalization change.
 
+There is a separate ambiguity in the radius gauge on the pulse-carrying
+initial leg `N_B`. The displayed MRT relation in GP Appendix A cannot pass
+through the stated corner `(U0,V0)=(-1,0)` while also satisfying the main-text
+conditions `r_U=-1/2` and `r(1.6,0)=0.2`. The production initializer currently
+uses the corner-compatible areal-affine reading
+
+```text
+r(U0,V) = r0 + V/2.
+```
+
+The earlier EF-affine reading remains available with
+`pulse_leg_gauge=:ef_affine`:
+
+```text
+r_star(r(U0,V)) = r_star(r0) + V/2.
+```
+
+`examples/compare_gp2026_initial_gauges.jl` compares that choice with the
+EF-affine reading. At `Q0=1`, the post-pulse characteristic data have
+`M-Q=5.3509e-3` (areal affine) and `1.5968e-2` (EF affine). At the quoted
+`Q0=1.0033218`, the corresponding gaps are `2.0831e-3` and `1.2779e-2`.
+The areal-affine result is much closer to the scale of the reported threshold
+offset `Qstar-1=3.3218e-3`, which is why it is now the production default.
+
+### Direct-lapse Newton update
+
+GP solve all fields at the unknown cell corner simultaneously with
+Newton-Raphson and discretize `f` directly. The production row path now
+matches that design with `cell_solver=:newton_direct`; the previous fixed-count
+Picard update of `log(f)` remains available as `:picard_log`. Newton uses a
+scaled finite-difference Jacobian, positivity-preserving damping for `r` and
+`f`, and defaults to `(rtol,atol)=(1e-13,1e-15)`.
+
+On `U in [-1,-0.8]`, `V in [0,20]`, the maximum unscaled residual over all
+seven discrete cell equations is `1.78e-14`, `5.31e-15`, and `1.15e-12` at
+joint resolutions `(Delta U,Delta V)=(0.01,0.08)`, `(0.005,0.04)`, and
+`(0.0025,0.02)`. The independent charge constraints converge at second order:
+`Q_U` rates are `1.98,1.99`, and `Q_V` rates are `2.00,2.00`.
+
+The corrected horizon controls still do not produce a completed negative
+`r_V` row. With the literal Eq. (9) rule:
+
+| `Q0` | limiting `U` | closest positive `r_V` | status |
+| ---: | ---: | ---: | :--- |
+| 1.0 | -0.156800 | 5.51e-3 | Float64 coordinate stall |
+| 1.0033218 | -0.082402 | 4.76e-3 | Float64 coordinate stall |
+
+The local controller gets much closer for `Q0=1`: after 5,500 rows it reaches
+`U=-0.12313525` and `min r_V=2.25e-5` at `V=144.24`, with a smallest realized
+`Delta U=1.89e-14`. The Newton cells remain finite, while the derivative-based
+`Q_U` diagnostic loses precision; the transverse `Q_V` residual remains
+`1.73e-6`.
+
+A separate uniform-`U` experiment forces the grid through the Eq. (9)
+limiting coordinate. It confirms that this surface is not a physical endpoint,
+but Newton fails in the interior before a complete trapped row is obtained.
+At `Delta U=0.002`, the last complete row is `U=-0.114` with
+`min r_V=2.22e-3`; at `Delta U=0.0005`, it is `U=-0.111` with
+`min r_V=5.39e-4`. The near factor-four reduction tracks the step refinement.
+This identifies a resolution-dependent failure in the pulse evolution, but
+does not by itself show that the MRT variables or bulk update cannot cross a
+horizon.
+
+### Analytic electrovacuum horizon crossing
+
+The exact extremal-RN solution provides a stronger separation test. In the
+GP2026 normalization of the uncompactified MRT chart,
+
+```text
+rstar(r) = rstar(M-U/2) + (V-V0)/2,
+f_code = F(r)/F(M-U/2),
+ds^2 = -f_code dU dV.
+```
+
+The future event horizon is the regular grid line `U=0`, where `r=M` and
+`f_code=1`. `initialize_gp2026_exact_extremal_rn!` seeds this exact solution
+on both initial characteristic legs, and
+`examples/convergence_gp2026_electrovacuum.jl` evolves from `U=-0.4` through
+the horizon to `U=0.2`.
+
+| `Delta U` | `Delta V` | max `|delta r|` | rate | max `|delta log(f)|` | rate | horizon `|delta r|` | horizon `|delta f|` |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.020 | 0.100 | 3.445e-5 | - | 1.334e-3 | - | 3.413e-5 | 4.061e-4 |
+| 0.010 | 0.050 | 8.613e-6 | 2.000 | 3.331e-4 | 2.001 | 8.532e-6 | 1.015e-4 |
+| 0.005 | 0.025 | 2.153e-6 | 2.000 | 8.326e-5 | 2.000 | 2.133e-6 | 2.538e-5 |
+
+The direct cell residual is at roundoff and `Q` remains exactly constant.
+Therefore the direct-Newton bulk equations do penetrate the horizon with
+second-order convergence. The missing trapped surface in the scalar runs must
+instead involve the pulse-leg initial data, adaptive approach to the
+near-marginal layer, or their interaction; it is not a generic coordinate or
+electrovacuum evolution obstruction.
+
+The zero-pulse initial-leg comparison also distinguishes the two available
+gauge readings. On `U0=-1`, `V in [0,10]`, `:ef_affine` agrees with the exact
+analytic chart to about `5e-13`, while `:areal_affine` differs by `3.82` in
+`r` and `2.20` in `log(f)`. The areal-affine data may describe RN in a
+different null reparameterization, but they are not the analytic
+GP-normalized MRT chart above. Reproduction runs should therefore explicitly
+compare the two choices; the production default is not changed by this test.
+
+A controlled charged comparison at `Q0=1`, `eQ0=0.6`, `A0=0.01`,
+`Vmax=400`, `Delta V=0.08`, and a 6,000-row local-controller budget changes
+only this pulse-leg gauge. Neither branch produces a trapped row:
+
+| pulse-leg gauge | rows | last `U` | status | closest `V` | closest positive `r_V` | `r-Q` there |
+| :--- | ---: | ---: | :--- | ---: | ---: | ---: |
+| `:areal_affine` | 6000 | -0.123135 | max rows | 164.64 | 2.03e-5 | 0.1397 |
+| `:ef_affine` | 5295 | -0.249278 | precision stalled | 172.72 | 2.11e-5 | 0.2180 |
+
+Thus selecting the analytically matched electrovacuum gauge does not recover
+the GP trapped surface and actually reaches the Float64 limiting layer sooner
+in this test. This is not caused by a low-order charged update:
+`examples/convergence_gp2026_charge_residuals.jl` with `:ef_affine` gives
+rates `1.98,1.99,2.00` for the `Q_U` residual and `2.00,2.00,2.00` for
+`Q_V`; the integrated charge mismatch approaches second order as well. The
+infinite late-run `Q_U` diagnostic is derivative roundoff once adjacent
+`U` rows differ at machine precision, while the transverse `Q_V` residual
+remains finite at `1.70e-6`.
+
 `cell_equation_residual_summary` and
 `examples/check_gp2026_cell_residuals.jl` audit the evolved rectangular-cell
 equations directly. On the GP2026 production branch
@@ -958,6 +1078,99 @@ now depends on the candidate future row instead of only on past-row speed
 estimates. A short `Vmax=40`, `step_control=:outer`, `backtrack=true` smoke
 run with realized caps `Delta rho <= 0.05` and `Delta eta <= 0.02` reaches
 `U=-0.5` with finite rows and 23 accepted rows.
+
+The first Berger-Oliger-inspired AMR piece is now implemented as a row local
+truncation-error probe. `berger_oliger_row_lte(previous, target_u, ep)`
+computes the next row once with a full `Delta U` step and once through the
+midpoint with two half steps, then estimates the second-order Richardson LTE
+from their difference. `row_lte_error` forms a normalized max norm over
+`r`, `logf`, `|Psi|`, `Q`, and `eta` by default, and
+`buffered_flag_intervals` clusters the flagged `V` points into candidate
+refinement patches. The default clustering is deliberately Hamade-Stewart-like
+and returns one buffered patch spanning all flagged points; `cluster=:components`
+keeps separate connected components.
+
+The July 2026 BO tests confirm that the full-step/two-half-step discrepancy
+has the expected cubic local-defect scaling for a second-order scheme. On the
+unit-test grid, halving `Delta U` gives a physical-sector error ratio `8.55`,
+or observed power `3.10`; individual `r`, `logf`, `|Psi|`, `Q`, and `eta`
+rates are all close to this value. Including the gauge-dependent `A_U` instead
+gives power about `1.84` and can flag the entire late-time row, which is why
+the default norm now excludes `A_U,A_V`. They remain available explicitly
+through the `fields` keyword.
+
+The older single-row prototype remains available for isolated tests.
+`berger_oliger_refine_patch` refines one selected parent `V` interval by a
+factor of four by default, interpolates the lower row onto that child grid,
+evolves the child through the two half-`U` steps, and injects coincident child
+values into both the parent midpoint and target rows. It then re-integrates
+the coarse `V` suffix after the patch endpoint, following Hamade-Stewart's
+downstream synchronization step. Unit tests cover child-grid dimensions,
+finite evolution, exact coincident-point injection, and suffix re-integration.
+A factor-four smoke over parent points `100:180` produces 321 child points, a
+finite corrected parent row, and maximum raw physical correction `1.93e-7`.
+
+### Persistent Hamade-Stewart hierarchy
+
+`src/StewartAMR.jl` now implements the simplified linked-list algorithm of
+Hamadé and Stewart, section 3 of `gr-qc/9506044`. It has one buffered error
+cluster per level, as in their simplified code, and supports:
+
+1. persistent child grids between revisions;
+2. factor-four refinement in both `U` and `V` by default;
+3. revision after a configurable fixed number of level steps;
+4. dynamic child creation, rebuilding, and destruction;
+5. recursively many child generations with grandchild containment;
+6. parent-to-child boundary interpolation during `U` subcycling;
+7. finest-to-coarsest injection at synchronized `U`;
+8. outward `V` reintegration after an injected patch endpoint.
+
+`evolve_gp2026_u_adaptive(...; bo_amr=true)` now uses this persistent
+hierarchy. The disposable `advance_u_row_berger_oliger` path is retained only
+as a local regression utility. Unit tests exercise two-level persistence,
+`1:4:16` recursive step counts, patch rebuilding and destruction, grandchild
+containment, coincident-point injection, suffix reintegration, and driver
+integration.
+
+`examples/convergence_gp2026_stewart_amr.jl` evolves exact extremal RN through
+`U=0`. With one factor-four child level it gives:
+
+| root `Delta U` | root `Delta V` | max `|delta r|` | rate | max `|delta log(f)|` | rate |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.040 | 0.200 | 8.610e-6 | - | 3.331e-4 | - |
+| 0.020 | 0.100 | 2.153e-6 | 2.000 | 8.326e-5 | 2.000 |
+| 0.010 | 0.050 | 5.383e-7 | 2.000 | 2.081e-5 | 2.000 |
+
+The electrovacuum charge error remains below `7e-14`.
+`examples/convergence_gp2026_stewart_charge.jl` forces an active child on the
+charged pulse and finds second-order independent Maxwell residuals:
+
+| root `Delta U` | root `Delta V` | max `Q_U` residual | rate | max `Q_V` residual | rate |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.020 | 0.160 | 1.594e-6 | - | 6.573e-6 | - |
+| 0.010 | 0.080 | 3.997e-7 | 1.996 | 1.645e-6 | 1.999 |
+| 0.005 | 0.040 | 1.002e-7 | 1.995 | 4.113e-7 | 2.000 |
+
+The Stewart LTE norm uses `atol + rtol*max(|y_coarse|,|y_fine|)`, without
+the previous artificial unit floor that made small throat variables such as
+`eta=1-|Q|/r` invisible. `examples/check_gp2026_stewart_amr.jl` reports
+per-level LTE, patch ranges, revisions, injections, and reintegrations.
+
+On quoted-critical data at `Vmax=400`, `Delta V=0.08`, and a 1200-row budget,
+the active setting `(atol,rtol)=(1e-10,1e-8)` performs 420 injections,
+24 downstream reintegrations, and 105 dynamic child create/destroy cycles,
+reaching three levels and `rho=9.48`. It remains finite but does not yet form
+a trapped row; the closest positive expansion is `r_V=3.76e-3` at `V=17.12`.
+A looser 6000-row `(1e-8,1e-5)` run does not request late-time refinement and
+also remains untrapped. The hierarchy implementation therefore passes its
+algorithmic and convergence checks, but it has not resolved the GP physics
+discrepancy.
+
+This is the simplified Stewart algorithm, not the general multi-cluster
+Berger-Oliger tree. Multiple sibling patches are intentionally absent.
+Conservative refluxing is also absent because the current characteristic
+cell equations are not written as finite-volume flux balances; it becomes
+necessary if that reformulation is adopted.
 
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time

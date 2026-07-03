@@ -27,7 +27,8 @@ function format_value(value)
 end
 
 function run_level(; q0, amplitude, U1, V1, du, dv, target_u, target_v,
-                   iterations, hyperbolic_charge)
+                   iterations, hyperbolic_charge, cell_solver,
+                   pulse_leg_gauge)
     ep = EvolutionParams(
         rn = RNParams(1.0, q0),
         scalar_charge = 0.6 / q0,
@@ -38,9 +39,11 @@ function run_level(; q0, amplitude, U1, V1, du, dv, target_u, target_v,
     nv = Int(round(V1 / dv)) + 1
     grid = gp2026_grid(; nu, nv, U0=-1.0, V0=0.0, U1, V1)
     state = NLState(grid)
-    initialize_gp2026_single_pulse!(state, grid, ep)
+    initialize_gp2026_single_pulse!(
+        state, grid, ep; pulse_leg_gauge,
+    )
     evolve_nonlinear!(state, grid, ep; iterations, reduced_scalar=true,
-                      hyperbolic_charge)
+                      hyperbolic_charge, cell_solver)
     adaptive = adaptive_state_from_rectangular(state, grid)
 
     _, sampled_v, _, expected_q_u, q_u_residual =
@@ -105,15 +108,27 @@ function main()
     V1 = real_argument(7, 20.0)
     target_u = real_argument(8, -0.9)
     target_v = real_argument(9, 10.0)
-    iterations = integer_argument(10, 10)
+    iterations = integer_argument(10, 12)
     charge_mode = argument(11, "hyperbolic")
     charge_mode in ("hyperbolic", "constraint") ||
         throw(ArgumentError("charge mode must be hyperbolic or constraint"))
     hyperbolic_charge = charge_mode == "hyperbolic"
+    cell_solver_argument = argument(12, "newton-direct")
+    cell_solver_argument in ("newton-direct", "picard-log") ||
+        throw(ArgumentError("cell solver must be newton-direct or picard-log"))
+    cell_solver = cell_solver_argument == "newton-direct" ?
+                  :newton_direct : :picard_log
+    pulse_leg_gauge_argument = argument(13, "areal-affine")
+    pulse_leg_gauge_argument in ("areal-affine", "ef-affine") ||
+        throw(ArgumentError("pulse-leg gauge must be areal-affine or ef-affine"))
+    pulse_leg_gauge = pulse_leg_gauge_argument == "areal-affine" ?
+                      :areal_affine : :ef_affine
 
     println("# GP2026 charge residual convergence")
     println("# Q0 = ", q0, ", eQ0 = 0.6, A0 = ", amplitude,
-            ", charge_mode = ", charge_mode)
+            ", charge_mode = ", charge_mode,
+            ", cell_solver = ", cell_solver,
+            ", pulse_leg_gauge = ", pulse_leg_gauge)
     println("# U range = [-1, ", U1, "], V range = [0, ", V1, "]")
     println("# target_u = ", target_u, ", target_v = ", target_v,
             ", iterations = ", iterations)
@@ -121,7 +136,8 @@ function main()
         run_level(; q0, amplitude, U1, V1,
                   du=base_du / 2.0^level,
                   dv=base_dv / 2.0^level,
-                  target_u, target_v, iterations, hyperbolic_charge)
+                  target_u, target_v, iterations, hyperbolic_charge,
+                  cell_solver, pulse_leg_gauge)
         for level in 0:levels-1
     ]
     print_table(rows)
