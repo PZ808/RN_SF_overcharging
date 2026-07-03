@@ -64,7 +64,7 @@ Thus Eq. (4)'s displayed `f^2/(2r^2)` coefficient is best treated as a typo or
 normalization slip. The mass identity in Eq. (10) is internally consistent with
 the paper metric and remains our reference for diagnostics.
 
-Appendix B also appears to drop a minus sign in its displayed `r_U` formula.
+Appendix C also appears to drop a minus sign in its displayed `r_U` formula.
 Differentiating the stated MRT-gauge relation
 `r_*(r_+ + V/2)+r_*(r_+ - U/2)=r_*(r)` gives a negative `r_U`; the main text
 also states that the GP single-pulse gauge has `r_U=-1/2` on `N_A`. The code
@@ -73,15 +73,33 @@ uses the negative sign.
 Appendix A is a convention trap rather than a confirmed typo. For
 super-extremal data, GP switch to "extremal gauge": the initial-leg radius is
 the extremal reference radius, while the corner lapse is normalized with the
-super-extremal `Q0` through Eq. (A4). Our initializer follows this by setting
-`r_U=-1/2`, `f_code=2 f_GP`, and `f_code(U0,V0)` from the Hawking-mass
-normalization. The statement that pure ingoing data allow the metric on `N_A`
-to be exact RN should therefore be read as a gauge-fixed characteristic
-construction, not as permission to replace the `N_A` data with subextremal
-MRT-gauge RN formulae.
+super-extremal `Q0` through Eq. (A4). Their displayed Eq. (A3), taken
+literally with `(U0,V0)=(-1,0)`, is singular at the stated corner. A shift of
+the extremal tortoise-coordinate origin, or the equivalent subtraction of
+its corner value, is therefore implicit. With that corner normalization and
+the main-text conditions `r_U=-1/2` and `r(1.6,0)=0.2`, the pulse-leg gauge
+reduces to the production `:areal_affine` data:
 
-`examples/diagnose_gp2026_initial_data.jl` is the corresponding executable
-check. It separates the two possible readings of `r_V` on `N_A`. With
+```text
+r(U,V0) = 1 - U/2,
+r(U0,V) = 3/2 + V/2.
+```
+
+The initializer sets `f_code=2 f_GP` and obtains `f_code(U0,V0)` from the
+Hawking-mass normalization. The statement that pure ingoing data allow the
+metric on `N_A` to be exact RN should therefore be read as a gauge-fixed
+characteristic construction, not as permission to replace the `N_A` data
+with subextremal MRT-gauge RN formulae.
+
+`gp2026_initial_constraint_residuals` and
+`examples/check_gp2026_initial_data.jl` directly audit the data written by
+the production initializer, using the same midpoint and trapezoidal
+quadratures. At `Q0=1.0033218` and `Delta V=0.08`, the corner mass is one
+exactly, the lapse residual is below `4e-16`, the charge-increment residual
+is below `1.2e-16`, and the potential residuals are below `2e-15`.
+
+`examples/diagnose_gp2026_initial_data.jl` additionally separates the two
+possible readings of `r_V` on `N_A`. With
 `Q0=1.0033218`, `A0=0.01`, and `eQ0=0.6`, using the mass-compatible RN value
 `r_V=f F_Q(r)/2` gives `max |M-M0|=2.22e-16`. Using the tempting but wrong
 extremal-reference value `r_V=F_ext(r)/2` away from the corner gives
@@ -89,9 +107,9 @@ extremal-reference value `r_V=F_ext(r)/2` away from the corner gives
 `Delta V=0.16, 0.08, 0.04`, the residuals
 `max |Q_V+r^2J_V/8|` are `4.94e-7`, `1.23e-7`, `3.09e-8`, and the log-lapse
 constraint residuals are `7.81e-6`, `1.95e-6`, `5.81e-7`. Thus the initial
-data currently look internally consistent to the expected finite-difference
-order, and the missing trapped-surface crossing is unlikely to be fixed by a
-simple Appendix-A normalization change.
+data are internally consistent to the expected finite-difference order. The
+remaining threshold shift is unlikely to come from a simple constraint
+integration error, though the Appendix-A coordinate-origin ambiguity remains.
 
 There is a separate ambiguity in the radius gauge on the pulse-carrying
 initial leg `N_B`. The displayed MRT relation in GP Appendix A cannot pass
@@ -132,8 +150,8 @@ joint resolutions `(Delta U,Delta V)=(0.01,0.08)`, `(0.005,0.04)`, and
 `(0.0025,0.02)`. The independent charge constraints converge at second order:
 `Q_U` rates are `1.98,1.99`, and `Q_V` rates are `2.00,2.00`.
 
-The corrected horizon controls still do not produce a completed negative
-`r_V` row. With the literal Eq. (9) rule:
+Before root-step rejection was added, the corrected horizon controls did not
+produce a completed negative `r_V` row. With the literal Eq. (9) rule:
 
 | `Q0` | limiting `U` | closest positive `r_V` | status |
 | ---: | ---: | ---: | :--- |
@@ -1162,9 +1180,55 @@ the active setting `(atol,rtol)=(1e-10,1e-8)` performs 420 injections,
 reaching three levels and `rho=9.48`. It remains finite but does not yet form
 a trapped row; the closest positive expansion is `r_V=3.76e-3` at `V=17.12`.
 A looser 6000-row `(1e-8,1e-5)` run does not request late-time refinement and
-also remains untrapped. The hierarchy implementation therefore passes its
-algorithmic and convergence checks, but it has not resolved the GP physics
-discrepancy.
+also remains untrapped. The hierarchy implementation therefore passed its
+algorithmic and convergence checks, but the hierarchy alone did not resolve
+the GP physics discrepancy.
+
+The missing numerical operation was transactional rejection of a failed
+coarse root step. `advance_stewart_hierarchy!` now evolves a trial hierarchy,
+halves `Delta U` after a Newton failure, and commits only a completely
+synchronized recursive step. This prevents a failed coarse solve from
+terminating the evolution before the active child can resolve the throat.
+Using the literal outer-boundary Eq. (9) controller,
+`(atol,rtol)=(1e-10,1e-8)`, three levels, and `Vmax=40`, the complete
+evolution to `Umax=1.6` now gives:
+
+| `Q0` | `Delta V` | `Vtrap` | `U` at minimum crossing |
+| ---: | ---: | ---: | ---: |
+| 1.001 | 0.080 | 7.740115 | 0.037091 |
+| 1.002 | 0.080 | 10.292215 | 0.052061 |
+| 1.003 | 0.080 | 12.316536 | 0.176653 |
+| 1.0032 | 0.080 | 12.662902 | 0.182329 |
+
+The monotonic increase of `Vtrap` as `Q0` approaches the quoted threshold
+from the black-hole side is the expected Section IIIA trend. For `Q0=1.001`,
+the joint `Delta V=0.08,0.04,0.02` sequence is
+`7.7401149, 7.7393168, 7.7391419`; the two error differences have ratio
+`4.56`, corresponding to observed order `2.19`. These are dynamically
+formed horizons because the initial corner is super-extremal. The reported
+`Vtrap` is the minimum crossing over all evolved rows, as in GP; stopping at
+the first trapped row gives a different and substantially larger value.
+
+This recovers horizon formation but does not yet reproduce the paper's
+quoted threshold quantitatively. At `Q0=1.0033218`, the minimum crossing is
+`12.88002` at `Delta V=0.08` and `12.87952` at `Delta V=0.04`, so the finite
+crossing is not explained by root-grid truncation error. At `Delta V=0.08`,
+`Q0=1.005` traps at `V=16.55368`, whereas `Q0=1.006` is untrapped through
+`Umax=1.6` on `Vmax=40`; the finite-domain effective threshold is therefore
+shifted into that interval.
+A fixed `p=1/2` fit to the current low-`Vtrap` points gives approximately
+`Qstar=1.0049`, but these crossings lie in the pulse transient and should not
+be used as a final critical fit.
+
+Hierarchy-depth saturation is visible near the quoted threshold. Stopping at
+the first trapped row gives `V=16.9981` with three levels and `V=17.0750`
+with four factor-four levels. The crossing survives the extra generation,
+but the fourth-level normalized LTE is still about `15.6`; its precise
+location is not tolerance-resolved. The next numerical task is to reduce the
+cost of the allocating cell Newton solve and permit another generation or
+multiple localized sibling patches. The remaining physics audit should focus
+on the extremal-gauge coordinate-origin ambiguity in Appendix A, because the
+implemented initial constraints themselves close at roundoff.
 
 This is the simplified Stewart algorithm, not the general multi-cluster
 Berger-Oliger tree. Multiple sibling patches are intentionally absent.

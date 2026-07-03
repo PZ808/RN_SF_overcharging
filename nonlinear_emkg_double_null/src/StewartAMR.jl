@@ -62,11 +62,15 @@ mutable struct StewartAMRStats
     injections::Int
     suffix_reintegrations::Int
     precision_fallbacks::Int
+    rejected_root_steps::Int
     max_level_reached::Int
 end
 
 StewartAMRStats() =
-    StewartAMRStats(Int[], Int[], Float64[], Float64[], 0, 0, 0, 0, 0, 0)
+    StewartAMRStats(
+        Int[], Int[], Float64[], Float64[],
+        0, 0, 0, 0, 0, 0, 0,
+    )
 
 mutable struct StewartAMRLevel{T<:Real}
     level::Int
@@ -630,33 +634,77 @@ function advance_stewart_hierarchy!(
     cell_solver::Symbol=:newton_direct,
     newton_rtol=1.0e-13,
     newton_atol=1.0e-15,
+    backtrack_on_failure::Bool=true,
+    backtrack_factor=0.5,
+    max_backtracks::Int=20,
+    min_backtrack_du=0.0,
 )
-    boundary_point = u -> gp2026_na_boundary_point(
-        u, ep;
-        U0,
-        V0,
-        M0,
-        pulse_leg_gauge,
-    )
-    result = advance_stewart_level!(
-        hierarchy.root,
-        target_u,
-        boundary_point,
-        ep,
-        hierarchy.config,
-        hierarchy.stats;
-        iterations,
-        hyperbolic_charge,
-        cell_solver,
-        newton_rtol,
-        newton_atol,
-    )
-    validate_stewart_hierarchy(hierarchy.root)
-    return merge(
-        result,
-        (
-            depth=stewart_hierarchy_depth(hierarchy.root),
-            stats=hierarchy.stats,
-        ),
-    )
+    zero(backtrack_factor) < backtrack_factor < one(backtrack_factor) ||
+        throw(ArgumentError("backtrack_factor must lie strictly between zero and one"))
+    max_backtracks >= 0 ||
+        throw(ArgumentError("max_backtracks must be nonnegative"))
+    min_backtrack_du >= 0 ||
+        throw(ArgumentError("min_backtrack_du must be nonnegative"))
+    start_u = hierarchy.root.current.u
+    target_u > start_u ||
+        throw(ArgumentError("target U must exceed the hierarchy root U"))
+    trial_target = target_u
+    last_error = nothing
+
+    for attempt in 0:max_backtracks
+        trial = deepcopy(hierarchy)
+        boundary_point = u -> gp2026_na_boundary_point(
+            u, ep;
+            U0,
+            V0,
+            M0,
+            pulse_leg_gauge,
+        )
+        result = try
+            advance_stewart_level!(
+                trial.root,
+                trial_target,
+                boundary_point,
+                ep,
+                trial.config,
+                trial.stats;
+                iterations,
+                hyperbolic_charge,
+                cell_solver,
+                newton_rtol,
+                newton_atol,
+            )
+        catch error
+            if !backtrack_on_failure || !(error isa ErrorException)
+                rethrow()
+            end
+            last_error = error
+            nothing
+        end
+        if !isnothing(result)
+            trial.stats.rejected_root_steps += attempt
+            hierarchy.root = trial.root
+            hierarchy.stats = trial.stats
+            validate_stewart_hierarchy(hierarchy.root)
+            return merge(
+                result,
+                (
+                    requested_target_u=target_u,
+                    accepted_target_u=trial_target,
+                    backtracks=attempt,
+                    depth=stewart_hierarchy_depth(hierarchy.root),
+                    stats=hierarchy.stats,
+                ),
+            )
+        end
+
+        next_du = (trial_target - start_u) * backtrack_factor
+        next_du > min_backtrack_du || break
+        trial_target = start_u + next_du
+        trial_target > start_u || break
+    end
+
+    isnothing(last_error) &&
+        throw(ErrorException("Stewart root step failed without a captured solver error"))
+    throw(last_error)
 end

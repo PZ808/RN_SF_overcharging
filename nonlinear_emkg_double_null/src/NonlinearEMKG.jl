@@ -281,6 +281,69 @@ function gp2026_fcorner_code(
     return fcorner
 end
 
+function gp2026_initial_scalar_data(
+    V::Real,
+    ep::EvolutionParams;
+    U0=-1.0,
+    V0=0.0,
+    width=20.0,
+    M0=ep.rn.M,
+    pulse_leg_gauge::Symbol=:areal_affine,
+)
+    r = gp2026_extremal_gauge_initial_radius(
+        U0, V;
+        U0,
+        V0,
+        M0,
+        pulse_leg_gauge,
+    )
+    rv = gp2026_extremal_gauge_rv(
+        U0, V;
+        U0,
+        V0,
+        M0,
+        pulse_leg_gauge,
+    )
+    amplitude = gp2026_single_pulse_envelope(
+        V;
+        amplitude=ep.amplitude,
+        width,
+    )
+    derivative = gp2026_single_pulse_envelope_derivative(
+        V;
+        amplitude=ep.amplitude,
+        width,
+    )
+    phase = ep.omega * V
+    z_re = amplitude * cos(phase)
+    z_im = -amplitude * sin(phase)
+    dz_re = derivative * cos(phase) -
+            ep.omega * amplitude * sin(phase)
+    dz_im = -derivative * sin(phase) -
+            ep.omega * amplitude * cos(phase)
+    scalar_scale = sqrt(32 * pi)
+    psi_re = scalar_scale * z_re
+    psi_im = scalar_scale * z_im
+    psi_v_re = scalar_scale * dz_re
+    psi_v_im = scalar_scale * dz_im
+    phi_re = psi_re / r
+    phi_im = psi_im / r
+    phi_v_re = (psi_v_re - rv * phi_re) / r
+    phi_v_im = (psi_v_im - rv * phi_im) / r
+    return (
+        r=r,
+        rv=rv,
+        psi_re=psi_re,
+        psi_im=psi_im,
+        psi_v_re=psi_v_re,
+        psi_v_im=psi_v_im,
+        phi_re=phi_re,
+        phi_im=phi_im,
+        phi_v_re=phi_v_re,
+        phi_v_im=phi_v_im,
+    )
+end
+
 function trapezoidal_integral(x::AbstractVector{<:Real}, y::AbstractVector{<:Real})
     length(x) == length(y) || throw(ArgumentError("integration arrays must have equal length"))
     integral = zero(promote_type(eltype(x), eltype(y)))
@@ -524,8 +587,6 @@ function initialize_gp2026_single_pulse!(st::NLState, g::Grid, ep::EvolutionPara
 
     i0 = firstindex(g.u)
     j0 = firstindex(g.v)
-    scalar_scale = sqrt(32 * pi)
-
     for i in eachindex(g.u)
         st.r[i, j0] = gp2026_extremal_gauge_initial_radius(
             g.u[i], V0; U0, V0, M0, pulse_leg_gauge,
@@ -535,11 +596,16 @@ function initialize_gp2026_single_pulse!(st::NLState, g::Grid, ep::EvolutionPara
         st.r[i0, j] = gp2026_extremal_gauge_initial_radius(
             U0, g.v[j]; U0, V0, M0, pulse_leg_gauge,
         )
-        amplitude = gp2026_single_pulse_envelope(g.v[j];
-                                                 amplitude=ep.amplitude, width)
-        phase = ep.omega * g.v[j]
-        st.phi_re[i0, j] = scalar_scale * amplitude * cos(phase)
-        st.phi_im[i0, j] = -scalar_scale * amplitude * sin(phase)
+        scalar = gp2026_initial_scalar_data(
+            g.v[j], ep;
+            U0,
+            V0,
+            width,
+            M0,
+            pulse_leg_gauge,
+        )
+        st.phi_re[i0, j] = scalar.psi_re
+        st.phi_im[i0, j] = scalar.psi_im
     end
 
     rv0 = gp2026_extremal_gauge_rv(
@@ -550,28 +616,6 @@ function initialize_gp2026_single_pulse!(st::NLState, g::Grid, ep::EvolutionPara
     # No scalar data on N_A: r_U/f is constant there and r_U=-1/2.
     st.logf[:, j0] .= log(fcorner)
 
-    function initial_phi_and_dv(V)
-        r = gp2026_extremal_gauge_initial_radius(
-            U0, V; U0, V0, M0, pulse_leg_gauge,
-        )
-        rv = gp2026_extremal_gauge_rv(
-            U0, V; U0, V0, M0, pulse_leg_gauge,
-        )
-        amplitude = gp2026_single_pulse_envelope(V; amplitude=ep.amplitude, width)
-        derivative = gp2026_single_pulse_envelope_derivative(V;
-                                                              amplitude=ep.amplitude, width)
-        phase = ep.omega * V
-        z_re = amplitude * cos(phase)
-        z_im = -amplitude * sin(phase)
-        dz_re = derivative * cos(phase) - ep.omega * amplitude * sin(phase)
-        dz_im = -derivative * sin(phase) - ep.omega * amplitude * cos(phase)
-        phi_re = scalar_scale * z_re / r
-        phi_im = scalar_scale * z_im / r
-        phiv_re = scalar_scale * (dz_re / r - z_re * rv / r^2)
-        phiv_im = scalar_scale * (dz_im / r - z_im * rv / r^2)
-        return r, rv, phi_re, phi_im, phiv_re, phiv_im
-    end
-
     # N_B carries the charged pulse. Integrate the Maxwell and VV Einstein
     # constraints at midpoint order on top of the super-extremal corner mass.
     logf_integral = zero(eltype(st.logf))
@@ -579,11 +623,28 @@ function initialize_gp2026_single_pulse!(st::NLState, g::Grid, ep::EvolutionPara
     for j in j0+1:lastindex(g.v)
         dv = g.v[j] - g.v[j - 1]
         Vmid = (g.v[j] + g.v[j - 1]) / 2
-        rmid, rvmid, phi_re, phi_im, phiv_re, phiv_im = initial_phi_and_dv(Vmid)
-        Ju, Jv = current_components(phi_re, phi_im, zero(phiv_re), zero(phiv_im),
-                                    phiv_re, phiv_im, ep.scalar_charge)
-        st.Q[i0, j] = st.Q[i0, j - 1] - dv * rmid^2 * Jv / 8
-        dlogf = rmid * (phiv_re^2 + phiv_im^2) / (4 * rvmid)
+        scalar = gp2026_initial_scalar_data(
+            Vmid, ep;
+            U0,
+            V0,
+            width,
+            M0,
+            pulse_leg_gauge,
+        )
+        _, Jv = current_components(
+            scalar.phi_re,
+            scalar.phi_im,
+            zero(scalar.phi_v_re),
+            zero(scalar.phi_v_im),
+            scalar.phi_v_re,
+            scalar.phi_v_im,
+            ep.scalar_charge,
+        )
+        st.Q[i0, j] =
+            st.Q[i0, j - 1] - dv * scalar.r^2 * Jv / 8
+        dlogf = scalar.r *
+                (scalar.phi_v_re^2 + scalar.phi_v_im^2) /
+                (4 * scalar.rv)
         logf_integral += dv * dlogf
         rv = gp2026_extremal_gauge_rv(
             U0, g.v[j]; U0, V0, M0, pulse_leg_gauge,

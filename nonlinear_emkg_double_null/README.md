@@ -31,8 +31,14 @@ Gundlach-Baumgarte-Hilditch arXiv:1908.05971, because the literal
 outer-boundary rule `Delta U=C/f_GP(U,Vmax)` can miss an interior stiff layer
 after apparent-horizon formation. The throat diagnostic uses
 `rho=-log((r-|Q|)/|Q|)` and reports matching bands for a future near-AdS2/JT
-patch. The next important work is adding local mesh management around that
-layer before horizon-accumulation validation.
+patch. The persistent Hamadé-Stewart hierarchy now combines factor-four
+subcycling, finest-to-coarsest injection, suffix reintegration, and
+transactional root-step rejection. It produces dynamically formed trapped
+surfaces on the black-hole side of the GP2026 threshold with second-order
+convergence in `Vtrap` away from criticality. The next important work is
+reducing the cell-Newton allocation cost, resolving the finest-level LTE near
+criticality, and auditing the Appendix-A coordinate-origin ambiguity before
+horizon-accumulation validation.
 
 ## Layout
 

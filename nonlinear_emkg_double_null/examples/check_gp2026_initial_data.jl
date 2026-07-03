@@ -21,6 +21,7 @@ nv = Int(round(20.0 / dv)) + 1
 grid = gp2026_grid(; nu, nv, U0=-1.0, V0=0.0, U1=1.6, V1=20.0)
 state = NLState(grid)
 initialize_gp2026_single_pulse!(state, grid, ep)
+constraints = gp2026_initial_constraint_residuals(state, grid, ep)
 
 r0 = state.r[1, 1]
 ru0 = gp2026_extremal_gauge_ru(-1.0)
@@ -49,3 +50,22 @@ println("charge deposited on N_B = ", state.Q[1, end] - state.Q[1, 1])
 println("max initial |Q_V - flux source| = ", maximum(abs, q_v_residual))
 println("f_code corner = ", exp(state.logf[1, 1]))
 println("f_GP corner = ", exp(state.logf[1, 1]) / 2)
+println("corner mass error = ", constraints.corner_mass_error)
+println("max N_A radius residual = ", constraints.na_radius)
+println("max N_A lapse-constraint residual = ",
+        constraints.na_lapse_constraint)
+println("max N_A charge residual = ", constraints.na_charge)
+println("max N_A scalar residual = ", constraints.na_scalar)
+println("max N_A A_U residual = ", constraints.na_au)
+println("max N_A A_V-constraint residual = ",
+        constraints.na_av_constraint)
+println("max N_B radius residual = ", constraints.nb_radius)
+println("max N_B scalar residual = ", constraints.nb_scalar)
+println("max N_B charge-constraint residual = ",
+        constraints.nb_charge_constraint)
+println("max N_B lapse-constraint residual = ",
+        constraints.nb_lapse_constraint)
+println("max N_B A_U-constraint residual = ",
+        constraints.nb_au_constraint)
+println("max N_B A_V residual = ", constraints.nb_av)
+println("corner Faraday residual = ", constraints.faraday_corner)

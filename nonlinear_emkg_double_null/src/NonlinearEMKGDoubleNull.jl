@@ -21,6 +21,7 @@ export initialize_mrt2013_outgoing_wave!, mrt2013_initial_bondi_mass, mrt2013_de
 export initialize_mrt2013_charged_outgoing_wave!
 export gp2026_single_pulse_envelope, gp2026_extremal_gauge_initial_radius
 export gp2026_extremal_gauge_ru, gp2026_extremal_gauge_rv, gp2026_fcorner_code
+export gp2026_initial_scalar_data
 export initialize_gp2026_single_pulse!
 export gp2026_exact_extremal_rn_radius, gp2026_exact_extremal_rn_fcode
 export initialize_gp2026_exact_extremal_rn!
@@ -70,6 +71,7 @@ export vtrap_diagnostic
 export gp2026_rphi_profile, gp2026_horizon_rphi_series
 export ThroatBoundaryObservables, throat_boundary_observables
 export cell_equation_residual_summary
+export gp2026_initial_constraint_residuals
 export horizon_charge_density_series, conformal_weight_s
 export rstar, areal_radius, metric_F, metric_f, metric_ftilde, radius_from_rstar, compact_v_from_ef_v
 

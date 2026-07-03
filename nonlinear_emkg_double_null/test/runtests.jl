@@ -206,6 +206,26 @@ end
     @test maximum(abs, state.Au[1, :]) > 0
     @test maximum(abs, state.Av[:, 1]) > 0
 
+    initial_residuals =
+        gp2026_initial_constraint_residuals(state, grid, ep)
+    @test initial_residuals.corner_mass ≈ 1.0
+    @test abs(initial_residuals.corner_mass_error) < 1.0e-14
+    @test abs(initial_residuals.corner_fcode -
+              initial_residuals.expected_corner_fcode) < 1.0e-14
+    @test initial_residuals.na_radius == 0
+    @test initial_residuals.na_lapse_constraint < 1.0e-14
+    @test initial_residuals.na_charge == 0
+    @test initial_residuals.na_scalar == 0
+    @test initial_residuals.na_au == 0
+    @test initial_residuals.na_av_constraint < 1.0e-13
+    @test initial_residuals.nb_radius == 0
+    @test initial_residuals.nb_scalar == 0
+    @test initial_residuals.nb_charge_constraint < 1.0e-14
+    @test initial_residuals.nb_lapse_constraint < 1.0e-14
+    @test initial_residuals.nb_au_constraint < 1.0e-14
+    @test initial_residuals.nb_av == 0
+    @test abs(initial_residuals.faraday_corner) < 1.0e-13
+
     r0 = state.r[1, 1]
     ru0 = gp2026_extremal_gauge_ru(-1.0)
     rv0 = gp2026_extremal_gauge_rv(-1.0, 0.0)
@@ -570,7 +590,6 @@ end
         persistent.stats,
     )
     persistent.root.steps_since_revision = 0
-    child_identity = persistent.root.child
     first_result = advance_stewart_hierarchy!(
         persistent, -0.98, ep;
         iterations=12,
@@ -581,7 +600,8 @@ end
         iterations=12,
         cell_solver=:newton_direct,
     )
-    @test persistent.root.child === child_identity
+    @test persistent.root.child.parent_interval == patch
+    @test persistent.stats.child_creations == 1
     @test first_result.depth == 2
     @test second_result.depth == 2
     @test second_result.row.u == -0.96

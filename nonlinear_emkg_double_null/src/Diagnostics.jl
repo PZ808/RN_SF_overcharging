@@ -913,6 +913,219 @@ function cell_equation_residual_summary(st::NLState, g::Grid,
     )
 end
 
+"""
+Audit the GP2026 characteristic initial data against the discrete constraints.
+
+Residuals use the same midpoint and trapezoidal rules as
+`initialize_gp2026_single_pulse!`. The stored metric coefficient is
+`f_code=2f_GP` and the stored scalar is
+`Psi=sqrt(32*pi)*r*phi_GP`.
+"""
+function gp2026_initial_constraint_residuals(
+    st::NLState,
+    g::Grid,
+    ep::EvolutionParams;
+    U0=first(g.u),
+    V0=first(g.v),
+    width=20.0,
+    M0=ep.rn.M,
+    pulse_leg_gauge::Symbol=:areal_affine,
+)
+    first(g.u) == U0 ||
+        throw(ArgumentError("GP initial audit requires first U point U0"))
+    first(g.v) == V0 ||
+        throw(ArgumentError("GP initial audit requires first V point V0"))
+    length(g.u) >= 2 && length(g.v) >= 2 ||
+        throw(ArgumentError("GP initial audit requires at least two points per leg"))
+
+    i0 = firstindex(g.u)
+    j0 = firstindex(g.v)
+    fcorner = gp2026_fcorner_code(
+        ep;
+        U0,
+        V0,
+        M0,
+        pulse_leg_gauge,
+    )
+    ru0 = gp2026_extremal_gauge_ru(U0; M0)
+    rv0 = gp2026_extremal_gauge_rv(
+        U0, V0;
+        U0,
+        V0,
+        M0,
+        pulse_leg_gauge,
+    )
+    corner_mass = renormalized_hawking_mass(
+        st.r[i0, j0],
+        exp(st.logf[i0, j0]),
+        ru0,
+        rv0,
+        st.Q[i0, j0],
+    )
+
+    T = promote_type(eltype(st.r), eltype(g.u), eltype(g.v))
+    na_radius = zero(T)
+    na_lapse = zero(T)
+    na_charge = zero(T)
+    na_scalar = zero(T)
+    na_au = zero(T)
+    na_av = zero(T)
+    reference_ru_over_f = ru0 / exp(st.logf[i0, j0])
+    for i in eachindex(g.u)
+        expected_r = gp2026_extremal_gauge_initial_radius(
+            g.u[i], V0;
+            U0,
+            V0,
+            M0,
+            pulse_leg_gauge,
+        )
+        na_radius = max(na_radius, abs(st.r[i, j0] - expected_r))
+        ru_over_f = gp2026_extremal_gauge_ru(g.u[i]; M0) /
+                    exp(st.logf[i, j0])
+        na_lapse = max(na_lapse, abs(ru_over_f - reference_ru_over_f))
+        na_charge = max(na_charge, abs(st.Q[i, j0] - ep.rn.Q0))
+        na_scalar = max(
+            na_scalar,
+            hypot(st.phi_re[i, j0], st.phi_im[i, j0]),
+        )
+        na_au = max(na_au, abs(st.Au[i, j0]))
+    end
+    for i in i0+1:lastindex(g.u)
+        du = g.u[i] - g.u[i - 1]
+        left = -st.Q[i - 1, j0] * exp(st.logf[i - 1, j0]) /
+               (4 * st.r[i - 1, j0]^2)
+        right = -st.Q[i, j0] * exp(st.logf[i, j0]) /
+                (4 * st.r[i, j0]^2)
+        residual = st.Av[i, j0] - st.Av[i - 1, j0] -
+                   du * (left + right) / 2
+        na_av = max(na_av, abs(residual))
+    end
+
+    nb_radius = zero(T)
+    nb_scalar = zero(T)
+    nb_charge = zero(T)
+    nb_lapse = zero(T)
+    nb_au = zero(T)
+    nb_av = zero(T)
+    for j in eachindex(g.v)
+        scalar = gp2026_initial_scalar_data(
+            g.v[j], ep;
+            U0,
+            V0,
+            width,
+            M0,
+            pulse_leg_gauge,
+        )
+        nb_radius = max(nb_radius, abs(st.r[i0, j] - scalar.r))
+        nb_scalar = max(
+            nb_scalar,
+            abs(st.phi_re[i0, j] - scalar.psi_re),
+            abs(st.phi_im[i0, j] - scalar.psi_im),
+        )
+        nb_av = max(nb_av, abs(st.Av[i0, j]))
+    end
+    for j in j0+1:lastindex(g.v)
+        dv = g.v[j] - g.v[j - 1]
+        midpoint = (g.v[j] + g.v[j - 1]) / 2
+        scalar = gp2026_initial_scalar_data(
+            midpoint, ep;
+            U0,
+            V0,
+            width,
+            M0,
+            pulse_leg_gauge,
+        )
+        _, Jv = current_components(
+            scalar.phi_re,
+            scalar.phi_im,
+            zero(scalar.phi_v_re),
+            zero(scalar.phi_v_im),
+            scalar.phi_v_re,
+            scalar.phi_v_im,
+            ep.scalar_charge,
+        )
+        expected_delta_q = -dv * scalar.r^2 * Jv / 8
+        nb_charge = max(
+            nb_charge,
+            abs(st.Q[i0, j] - st.Q[i0, j - 1] - expected_delta_q),
+        )
+
+        rv_left = gp2026_extremal_gauge_rv(
+            U0, g.v[j - 1];
+            U0,
+            V0,
+            M0,
+            pulse_leg_gauge,
+        )
+        rv_right = gp2026_extremal_gauge_rv(
+            U0, g.v[j];
+            U0,
+            V0,
+            M0,
+            pulse_leg_gauge,
+        )
+        scalar_source = scalar.r *
+                        (scalar.phi_v_re^2 + scalar.phi_v_im^2) /
+                        (4 * scalar.rv)
+        expected_delta_logf =
+            log(rv_right / rv_left) + dv * scalar_source
+        nb_lapse = max(
+            nb_lapse,
+            abs(
+                st.logf[i0, j] - st.logf[i0, j - 1] -
+                expected_delta_logf
+            ),
+        )
+
+        left = st.Q[i0, j - 1] * exp(st.logf[i0, j - 1]) /
+               (4 * st.r[i0, j - 1]^2)
+        right = st.Q[i0, j] * exp(st.logf[i0, j]) /
+                (4 * st.r[i0, j]^2)
+        potential_residual = st.Au[i0, j] - st.Au[i0, j - 1] -
+                             dv * (left + right) / 2
+        nb_au = max(nb_au, abs(potential_residual))
+    end
+
+    du0 = g.u[i0 + 1] - g.u[i0]
+    dv0 = g.v[j0 + 1] - g.v[j0]
+    av_u = (st.Av[i0 + 1, j0] - st.Av[i0, j0]) / du0
+    au_v = (st.Au[i0, j0 + 1] - st.Au[i0, j0]) / dv0
+    expected_av_u = (
+        -st.Q[i0, j0] * exp(st.logf[i0, j0]) /
+        (4 * st.r[i0, j0]^2) -
+        st.Q[i0 + 1, j0] * exp(st.logf[i0 + 1, j0]) /
+        (4 * st.r[i0 + 1, j0]^2)
+    ) / 2
+    expected_au_v = (
+        st.Q[i0, j0] * exp(st.logf[i0, j0]) /
+        (4 * st.r[i0, j0]^2) +
+        st.Q[i0, j0 + 1] * exp(st.logf[i0, j0 + 1]) /
+        (4 * st.r[i0, j0 + 1]^2)
+    ) / 2
+    expected_faraday = expected_av_u - expected_au_v
+    faraday_corner = av_u - au_v - expected_faraday
+
+    return (
+        corner_mass=corner_mass,
+        corner_mass_error=corner_mass - M0,
+        corner_fcode=exp(st.logf[i0, j0]),
+        expected_corner_fcode=fcorner,
+        na_radius=na_radius,
+        na_lapse_constraint=na_lapse,
+        na_charge=na_charge,
+        na_scalar=na_scalar,
+        na_au=na_au,
+        na_av_constraint=na_av,
+        nb_radius=nb_radius,
+        nb_scalar=nb_scalar,
+        nb_charge_constraint=nb_charge,
+        nb_lapse_constraint=nb_lapse,
+        nb_au_constraint=nb_au,
+        nb_av=nb_av,
+        faraday_corner=faraday_corner,
+    )
+end
+
 function fit_power_law(x, y; xmin=nothing, xmax=nothing)
     idx = trues(length(x))
     if xmin !== nothing

@@ -7,6 +7,13 @@ end
 real_argument(index, default) = parse(Float64, argument(index, default))
 integer_argument(index, default) = parse(Int, argument(index, default))
 
+function boolean_argument(index, default)
+    value = lowercase(argument(index, default))
+    value in ("true", "t", "1", "yes", "y", "on") && return true
+    value in ("false", "f", "0", "no", "n", "off") && return false
+    throw(ArgumentError("argument $index must be true or false"))
+end
+
 function symbol_argument(index, default, choices)
     value = argument(index, default)
     value in keys(choices) ||
@@ -60,6 +67,7 @@ function main()
         ),
     )
     bo_atol = real_argument(13, 1.0e-8)
+    stop_on_trap = boolean_argument(14, false)
 
     U0 = -1.0
     ep = EvolutionParams(
@@ -114,6 +122,13 @@ function main()
         )
         push!(rows, result.row)
         finite_row(result.row) || break
+        if stop_on_trap &&
+           !isnothing(row_apparent_horizon_crossing(
+               result.row;
+               row_index=length(rows),
+           ))
+            break
+        end
     end
 
     last_valid = findlast(finite_row, rows)
@@ -145,6 +160,7 @@ function main()
         ", bo_rtol=", bo_rtol,
         ", max_levels=", max_levels,
         ", revision_interval=", revision_interval,
+        ", stop_on_trap=", stop_on_trap,
     )
     println("stored rows = ", length(rows))
     println("valid rows = ", length(valid_rows))
@@ -169,6 +185,7 @@ function main()
     println("suffix reintegrations = ",
             hierarchy.stats.suffix_reintegrations)
     println("precision fallbacks = ", hierarchy.stats.precision_fallbacks)
+    println("rejected root steps = ", hierarchy.stats.rejected_root_steps)
     println("next controlled Delta U = ", next_step.selected)
 end
 
