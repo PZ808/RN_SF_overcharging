@@ -796,12 +796,15 @@ function evolve_nonlinear!(
     newton_atol=1.0e-15,
 )
     nu, nv = size(g)
+    newton_workspace = cell_solver === :newton_direct ?
+                       NewtonCellWorkspace(eltype(st.r)) :
+                       nothing
     for i in 1:nu-1
         for j in 1:nv-1
             step_nonlinear_cell!(st, g, ep, i, j;
                                  iterations, subtract_rn_background, reduced_scalar,
                                  hyperbolic_charge, cell_solver, newton_rtol,
-                                 newton_atol)
+                                 newton_atol, newton_workspace)
         end
     end
     return st
@@ -849,18 +852,106 @@ function scaled_cell_residual_norm(residual, values, rtol, atol)
     return norm
 end
 
-function damped_newton_cell(residual_function, initial;
-                            max_iterations::Int=10,
-                            rtol=1.0e-10,
-                            atol=1.0e-12,
-                            max_backtracks::Int=12)
+mutable struct NewtonCellWorkspace{T<:Real}
+    values::Vector{T}
+    residual::Vector{T}
+    trial::Vector{T}
+    trial_residual::Vector{T}
+    jacobian::Matrix{T}
+    row_scale::Vector{T}
+    column_scale::Vector{T}
+    step_scaled::Vector{T}
+    step::Vector{T}
+end
+
+function NewtonCellWorkspace(::Type{T}, n::Int=7) where {T<:Real}
+    n > 0 || throw(ArgumentError("Newton workspace size must be positive"))
+    return NewtonCellWorkspace(
+        zeros(T, n),
+        zeros(T, n),
+        zeros(T, n),
+        zeros(T, n),
+        zeros(T, n, n),
+        zeros(T, n),
+        zeros(T, n),
+        zeros(T, n),
+        zeros(T, n),
+    )
+end
+
+function solve_dense_linear_system!(matrix, rhs)
+    n = length(rhs)
+    size(matrix) == (n, n) ||
+        throw(ArgumentError("linear system dimensions do not match"))
+    T = eltype(matrix)
+    for column in 1:n
+        pivot = column
+        pivot_value = abs(matrix[column, column])
+        for row in column+1:n
+            candidate = abs(matrix[row, column])
+            if candidate > pivot_value
+                pivot = row
+                pivot_value = candidate
+            end
+        end
+        isfinite(pivot_value) && pivot_value > eps(float(one(T))) ||
+            return false
+        if pivot != column
+            for k in column:n
+                matrix[column, k], matrix[pivot, k] =
+                    matrix[pivot, k], matrix[column, k]
+            end
+            rhs[column], rhs[pivot] = rhs[pivot], rhs[column]
+        end
+        diagonal = matrix[column, column]
+        for row in column+1:n
+            factor = matrix[row, column] / diagonal
+            matrix[row, column] = zero(T)
+            for k in column+1:n
+                matrix[row, k] -= factor * matrix[column, k]
+            end
+            rhs[row] -= factor * rhs[column]
+        end
+    end
+    for row in n:-1:1
+        value = rhs[row]
+        for column in row+1:n
+            value -= matrix[row, column] * rhs[column]
+        end
+        diagonal = matrix[row, row]
+        isfinite(diagonal) && abs(diagonal) > eps(float(one(T))) ||
+            return false
+        rhs[row] = value / diagonal
+    end
+    for value in rhs
+        isfinite(value) || return false
+    end
+    return true
+end
+
+function damped_newton_cell!(
+    residual_function!,
+    workspace::NewtonCellWorkspace;
+    max_iterations::Int=10,
+    rtol=1.0e-10,
+    atol=1.0e-12,
+    max_backtracks::Int=12,
+)
     max_iterations >= 1 ||
         throw(ArgumentError("Newton max_iterations must be positive"))
     zero(rtol) < rtol || throw(ArgumentError("Newton rtol must be positive"))
     zero(atol) < atol || throw(ArgumentError("Newton atol must be positive"))
 
-    values = copy(initial)
-    residual = residual_function(values)
+    values = workspace.values
+    residual = workspace.residual
+    trial = workspace.trial
+    trial_residual = workspace.trial_residual
+    jacobian = workspace.jacobian
+    row_scale = workspace.row_scale
+    column_scale = workspace.column_scale
+    step_scaled = workspace.step_scaled
+    step = workspace.step
+    residual_function!(residual, values)
     residual_norm = scaled_cell_residual_norm(residual, values, rtol, atol)
     isfinite(residual_norm) ||
         return (values=values, converged=false, iterations=0,
@@ -869,10 +960,6 @@ function damped_newton_cell(residual_function, initial;
     T = eltype(values)
     finite_difference_step = sqrt(eps(float(one(T))))
     n = length(values)
-    jacobian = Matrix{T}(undef, n, n)
-    scaled_residual = Vector{T}(undef, n)
-    row_scale = Vector{T}(undef, n)
-    column_scale = Vector{T}(undef, n)
 
     for iteration in 1:max_iterations
         residual_norm <= one(residual_norm) &&
@@ -882,13 +969,13 @@ function damped_newton_cell(residual_function, initial;
         for k in 1:n
             row_scale[k] = atol + rtol * max(abs(values[k]), one(T))
             column_scale[k] = max(abs(values[k]), one(T))
-            scaled_residual[k] = residual[k] / row_scale[k]
+            step_scaled[k] = residual[k] / row_scale[k]
         end
         for column in 1:n
-            trial = copy(values)
+            copyto!(trial, values)
             increment = finite_difference_step * column_scale[column]
             trial[column] += increment
-            trial_residual = residual_function(trial)
+            residual_function!(trial_residual, trial)
             for row in 1:n
                 jacobian[row, column] =
                     (trial_residual[row] - residual[row]) /
@@ -896,25 +983,29 @@ function damped_newton_cell(residual_function, initial;
             end
         end
 
-        step_scaled = try
-            jacobian \ scaled_residual
-        catch
+        solve_dense_linear_system!(jacobian, step_scaled) ||
             return (values=values, converged=false, iterations=iteration,
                     residual_norm=residual_norm)
+        for k in 1:n
+            step[k] = column_scale[k] * step_scaled[k]
         end
-        step = column_scale .* step_scaled
 
         accepted = false
         damping = one(T)
         for _ in 0:max_backtracks
-            trial = values .- damping .* step
-            if all(isfinite, trial) && trial[1] > zero(T) && trial[2] > zero(T)
-                trial_residual = residual_function(trial)
+            valid = true
+            for k in 1:n
+                trial[k] = values[k] - damping * step[k]
+                valid &= isfinite(trial[k])
+            end
+            valid &= trial[1] > zero(T) && trial[2] > zero(T)
+            if valid
+                residual_function!(trial_residual, trial)
                 trial_norm =
                     scaled_cell_residual_norm(trial_residual, trial, rtol, atol)
                 if isfinite(trial_norm) && trial_norm < residual_norm
-                    values = trial
-                    residual = trial_residual
+                    copyto!(values, trial)
+                    copyto!(residual, trial_residual)
                     residual_norm = trial_norm
                     accepted = true
                     break
@@ -1022,7 +1113,8 @@ function step_nonlinear_cell!(st::NLState, g::Grid, ep::EvolutionParams, i::Int,
                               hyperbolic_charge::Bool=false,
                               cell_solver::Symbol=:picard_log,
                               newton_rtol=1.0e-13,
-                              newton_atol=1.0e-15)
+                              newton_atol=1.0e-15,
+                              newton_workspace=nothing)
     hyperbolic_charge && !reduced_scalar &&
         throw(ArgumentError("the implemented hyperbolic charge equation requires reduced_scalar=true"))
     cell_solver in (:picard_log, :newton_direct) ||
@@ -1059,9 +1151,21 @@ function step_nonlinear_cell!(st::NLState, g::Grid, ep::EvolutionParams, i::Int,
         f11 = f10 + f01 - f00
         f11 > 0 || (f11 = max(f10, f01, f00))
         q11 = hyperbolic_charge ? q10 + q01 - q00 : q01
-        initial = [r11, f11, pr11, pi11, au11, av11, q11]
+        workspace = isnothing(newton_workspace) ?
+                    NewtonCellWorkspace(eltype(st.r)) :
+                    newton_workspace
+        values = workspace.values
+        length(values) == 7 ||
+            throw(ArgumentError("direct cell Newton workspace must have size 7"))
+        values[1] = r11
+        values[2] = f11
+        values[3] = pr11
+        values[4] = pi11
+        values[5] = au11
+        values[6] = av11
+        values[7] = q11
 
-        function direct_residual(values)
+        function direct_residual!(residual, values)
             r11n, f11n, pr11n, pi11n, au11n, av11n, q11n = values
             r = corner_average(r00, r10, r01, r11n)
             f = corner_average(f00, f10, f01, f11n)
@@ -1109,19 +1213,24 @@ function step_nonlinear_cell!(st::NLState, g::Grid, ep::EvolutionParams, i::Int,
             q_target = hyperbolic_charge ?
                        q10 + q01 - q00 + du * dv * quv :
                        q01 + du * quc
-            return [
-                r11n - (r10 + r01 - r00 + du * dv * ruv),
-                f11n - (f10 + f01 - f00 + du * dv * fuv),
-                pr11n - (pr10 + pr01 - pr00 + du * dv * pruv),
-                pi11n - (pi10 + pi01 - pi00 + du * dv * piuv),
-                au11n - (au10 - au01 + au00 + 2dv * auv),
-                av11n - (av01 - av10 + av00 + 2du * avu),
-                q11n - q_target,
-            ]
+            residual[1] =
+                r11n - (r10 + r01 - r00 + du * dv * ruv)
+            residual[2] =
+                f11n - (f10 + f01 - f00 + du * dv * fuv)
+            residual[3] =
+                pr11n - (pr10 + pr01 - pr00 + du * dv * pruv)
+            residual[4] =
+                pi11n - (pi10 + pi01 - pi00 + du * dv * piuv)
+            residual[5] =
+                au11n - (au10 - au01 + au00 + 2dv * auv)
+            residual[6] =
+                av11n - (av01 - av10 + av00 + 2du * avu)
+            residual[7] = q11n - q_target
+            return residual
         end
 
-        solution = damped_newton_cell(
-            direct_residual, initial;
+        solution = damped_newton_cell!(
+            direct_residual!, workspace;
             max_iterations=iterations, rtol=newton_rtol, atol=newton_atol,
         )
         solution.converged ||

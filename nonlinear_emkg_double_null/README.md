@@ -32,13 +32,15 @@ outer-boundary rule `Delta U=C/f_GP(U,Vmax)` can miss an interior stiff layer
 after apparent-horizon formation. The throat diagnostic uses
 `rho=-log((r-|Q|)/|Q|)` and reports matching bands for a future near-AdS2/JT
 patch. The persistent Hamadé-Stewart hierarchy now combines factor-four
-subcycling, finest-to-coarsest injection, suffix reintegration, and
-transactional root-step rejection. It produces dynamically formed trapped
-surfaces on the black-hole side of the GP2026 threshold with second-order
-convergence in `Vtrap` away from criticality. The next important work is
-reducing the cell-Newton allocation cost, resolving the finest-level LTE near
-criticality, and auditing the Appendix-A coordinate-origin ambiguity before
-horizon-accumulation validation.
+subcycling, multiple connected-component sibling patches, causal
+finest-to-coarsest injection, suffix reintegration, and transactional
+root-step rejection. Optional finest-level LTE rejection now prevents an
+under-resolved maximum-level step from being accepted. It produces
+dynamically formed trapped surfaces on the black-hole side of the GP2026
+threshold with stable root-`V` and outer-boundary controls; the remaining
+dominant uncertainty is dependence on the GP `C` step-controller parameter.
+The next important work is reducing that controller dependence before a new
+critical-scaling or horizon-accumulation fit.
 
 ## Layout
 

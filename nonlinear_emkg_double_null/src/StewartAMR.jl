@@ -2,8 +2,9 @@
 Configuration for the simplified Hamade-Stewart Berger-Oliger hierarchy.
 
 `max_levels` counts the root grid. Each child refines both null directions by
-`refinement_factor`; Stewart used a factor of four and one buffered error
-cluster per level.
+`refinement_factor`. Error components are buffered, nearby components are
+merged, and at most `max_sibling_patches` disjoint patches are retained per
+parent.
 """
 struct StewartAMRConfig{T<:Real}
     refinement_factor::Int
@@ -14,6 +15,9 @@ struct StewartAMRConfig{T<:Real}
     rtol::T
     order::Int
     buffer_points::Int
+    merge_gap_points::Int
+    max_sibling_patches::Int
+    reject_on_finest_lte::Bool
     reintegrate::Bool
 end
 
@@ -26,6 +30,9 @@ function StewartAMRConfig(;
     rtol=1.0e-5,
     order::Int=2,
     buffer_points::Int=4,
+    merge_gap_points::Int=2,
+    max_sibling_patches::Int=8,
+    reject_on_finest_lte::Bool=false,
     reintegrate::Bool=true,
 )
     refinement_factor >= 2 ||
@@ -36,6 +43,10 @@ function StewartAMRConfig(;
     order >= 1 || throw(ArgumentError("order must be positive"))
     buffer_points >= 0 ||
         throw(ArgumentError("buffer_points must be nonnegative"))
+    merge_gap_points >= 0 ||
+        throw(ArgumentError("merge_gap_points must be nonnegative"))
+    max_sibling_patches >= 1 ||
+        throw(ArgumentError("max_sibling_patches must be positive"))
     atol > 0 || throw(ArgumentError("atol must be positive"))
     rtol >= 0 || throw(ArgumentError("rtol must be nonnegative"))
     T = promote_type(typeof(atol), typeof(rtol))
@@ -48,6 +59,9 @@ function StewartAMRConfig(;
         convert(T, rtol),
         order,
         buffer_points,
+        merge_gap_points,
+        max_sibling_patches,
+        reject_on_finest_lte,
         reintegrate,
     )
 end
@@ -63,21 +77,64 @@ mutable struct StewartAMRStats
     suffix_reintegrations::Int
     precision_fallbacks::Int
     rejected_root_steps::Int
+    rejected_finest_lte_steps::Int
     max_level_reached::Int
 end
 
 StewartAMRStats() =
     StewartAMRStats(
         Int[], Int[], Float64[], Float64[],
-        0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
     )
+
+function copy_stewart_stats(stats::StewartAMRStats)
+    return StewartAMRStats(
+        copy(stats.level_steps),
+        copy(stats.revisions),
+        copy(stats.last_lte),
+        copy(stats.max_lte),
+        stats.child_creations,
+        stats.child_destructions,
+        stats.injections,
+        stats.suffix_reintegrations,
+        stats.precision_fallbacks,
+        stats.rejected_root_steps,
+        stats.rejected_finest_lte_steps,
+        stats.max_level_reached,
+    )
+end
+
+struct StewartFinestLTEError{T<:Real} <: Exception
+    level::Int
+    max_error::T
+end
+
+function Base.showerror(io::IO, error::StewartFinestLTEError)
+    print(
+        io,
+        "Stewart finest-level LTE exceeds tolerance at level ",
+        error.level,
+        ": ",
+        error.max_error,
+    )
+end
 
 mutable struct StewartAMRLevel{T<:Real}
     level::Int
     parent_interval::UnitRange{Int}
     current::NLRow{T}
-    child::Union{Nothing,StewartAMRLevel{T}}
+    children::Vector{StewartAMRLevel{T}}
     steps_since_revision::Int
+end
+
+function copy_stewart_topology(level::StewartAMRLevel{T}) where {T<:Real}
+    return StewartAMRLevel{T}(
+        level.level,
+        level.parent_interval,
+        level.current,
+        [copy_stewart_topology(child) for child in level.children],
+        level.steps_since_revision,
+    )
 end
 
 mutable struct StewartAMRHierarchy{T<:Real,C<:Real}
@@ -96,7 +153,7 @@ function initialize_stewart_hierarchy(
         0,
         firstindex(initial.v):lastindex(initial.v),
         initial,
-        nothing,
+        StewartAMRLevel{T}[],
         config.revision_interval,
     )
     return StewartAMRHierarchy(
@@ -227,6 +284,43 @@ function stewart_row_lte_error(
     return error
 end
 
+function merge_stewart_patch_intervals(
+    intervals::AbstractVector{<:UnitRange{Int}},
+    point_count::Int;
+    merge_gap_points::Int=0,
+    max_patches::Int=typemax(Int),
+)
+    isempty(intervals) && return UnitRange{Int}[]
+    merge_gap_points >= 0 ||
+        throw(ArgumentError("merge_gap_points must be nonnegative"))
+    max_patches >= 1 ||
+        throw(ArgumentError("max_patches must be positive"))
+    patches = sort(
+        [normalized_patch_interval(interval, point_count) for interval in intervals];
+        by=first,
+    )
+    merged = UnitRange{Int}[]
+    for patch in patches
+        if isempty(merged) ||
+           first(patch) - last(merged[end]) - 1 > merge_gap_points
+            push!(merged, patch)
+        else
+            merged[end] = first(merged[end]):max(last(merged[end]), last(patch))
+        end
+    end
+    while length(merged) > max_patches
+        gaps = [
+            first(merged[index + 1]) - last(merged[index]) - 1
+            for index in 1:length(merged)-1
+        ]
+        index = argmin(gaps)
+        combined = first(merged[index]):last(merged[index + 1])
+        merged[index] = combined
+        deleteat!(merged, index + 1)
+    end
+    return merged
+end
+
 function stewart_row_lte(
     previous::NLRow,
     target_u::Real,
@@ -274,10 +368,16 @@ function stewart_row_lte(
     )
     error = stewart_row_lte_error(full, half, config)
     flags = [value > one(value) for value in error]
-    intervals = buffered_flag_intervals(
+    components = buffered_flag_intervals(
         flags;
         buffer_points=config.buffer_points,
-        cluster=:all,
+        cluster=:components,
+    )
+    intervals = merge_stewart_patch_intervals(
+        components,
+        length(previous.v);
+        merge_gap_points=config.merge_gap_points,
+        max_patches=config.max_sibling_patches,
     )
     return (
         full=full,
@@ -290,24 +390,14 @@ function stewart_row_lte(
     )
 end
 
-function destroy_stewart_child!(
+function destroy_stewart_children!(
     level::StewartAMRLevel,
     stats::StewartAMRStats,
 )
-    isnothing(level.child) && return level
-    level.child = nothing
-    stats.child_destructions += 1
+    isempty(level.children) && return level
+    stats.child_destructions += length(level.children)
+    empty!(level.children)
     return level
-end
-
-function stewart_descendant_v_ranges(level::StewartAMRLevel{T}) where {T<:Real}
-    ranges = Tuple{T,T}[]
-    current = level.child
-    while !isnothing(current)
-        push!(ranges, (first(current.current.v), last(current.current.v)))
-        current = current.child
-    end
-    return ranges
 end
 
 function parent_interval_covering_v_range(
@@ -322,106 +412,95 @@ function parent_interval_covering_v_range(
     return lo:hi
 end
 
-function rebuild_stewart_child!(
+function rebuild_stewart_children!(
     level::StewartAMRLevel{T},
-    interval::UnitRange{Int},
+    intervals::AbstractVector{<:UnitRange{Int}},
     config::StewartAMRConfig,
     stats::StewartAMRStats,
 ) where {T<:Real}
     level.level + 1 < config.max_levels || return level
-    descendant_ranges = isnothing(level.child) ?
-                        Tuple{T,T}[] :
-                        stewart_descendant_v_ranges(level.child)
-    patch = normalized_patch_interval(interval, length(level.current.v))
-    if !isempty(descendant_ranges)
-        descendant_patch = parent_interval_covering_v_range(
-            level.current.v,
-            first(first(descendant_ranges)),
-            last(first(descendant_ranges)),
-        )
-        patch = (
-            min(first(patch), first(descendant_patch)):
-            max(last(patch), last(descendant_patch))
-        )
-    end
-    fine_v = refined_v_patch_grid(
-        level.current.v, patch;
-        refinement_factor=config.refinement_factor,
+    patches = merge_stewart_patch_intervals(
+        intervals,
+        length(level.current.v);
+        merge_gap_points=config.merge_gap_points,
+        max_patches=config.max_sibling_patches,
     )
-    child_row = interpolate_row(level.current, fine_v)
-    if !isnothing(level.child)
-        stats.child_destructions += 1
-    end
-    level.child = StewartAMRLevel{T}(
-        level.level + 1,
-        patch,
-        child_row,
-        nothing,
-        config.revision_interval,
-    )
-    stats.child_creations += 1
-    stats.max_level_reached = max(stats.max_level_reached, level.level + 1)
-
-    parent = level.child
-    for (first_v, last_v) in descendant_ranges
-        parent.level + 1 < config.max_levels || break
-        descendant_patch = parent_interval_covering_v_range(
-            parent.current.v, first_v, last_v,
-        )
-        descendant_v = refined_v_patch_grid(
-            parent.current.v,
-            descendant_patch;
+    destroy_stewart_children!(level, stats)
+    for patch in patches
+        fine_v = refined_v_patch_grid(
+            level.current.v, patch;
             refinement_factor=config.refinement_factor,
         )
-        descendant_row = interpolate_row(parent.current, descendant_v)
-        parent.child = StewartAMRLevel{T}(
-            parent.level + 1,
-            descendant_patch,
-            descendant_row,
-            nothing,
-            config.revision_interval,
+        child_row = interpolate_row(level.current, fine_v)
+        push!(
+            level.children,
+            StewartAMRLevel{T}(
+                level.level + 1,
+                patch,
+                child_row,
+                StewartAMRLevel{T}[],
+                config.revision_interval,
+            ),
         )
         stats.child_creations += 1
         stats.max_level_reached =
-            max(stats.max_level_reached, parent.level + 1)
-        parent = parent.child
+            max(stats.max_level_reached, level.level + 1)
     end
     return level
 end
 
+function rebuild_stewart_child!(
+    level::StewartAMRLevel,
+    interval::UnitRange{Int},
+    config::StewartAMRConfig,
+    stats::StewartAMRStats,
+)
+    return rebuild_stewart_children!(
+        level,
+        UnitRange{Int}[interval],
+        config,
+        stats,
+    )
+end
+
 function stewart_hierarchy_depth(level::StewartAMRLevel)
-    return isnothing(level.child) ? level.level + 1 :
-           stewart_hierarchy_depth(level.child)
+    isempty(level.children) && return level.level + 1
+    return maximum(stewart_hierarchy_depth(child) for child in level.children)
 end
 
 function stewart_hierarchy_intervals(level::StewartAMRLevel)
-    intervals = UnitRange{Int}[level.parent_interval]
-    current = level
-    while !isnothing(current.child)
-        current = current.child
-        push!(intervals, current.parent_interval)
+    intervals = NamedTuple{(:level, :interval),Tuple{Int,UnitRange{Int}}}[
+        (level=level.level, interval=level.parent_interval),
+    ]
+    for child in level.children
+        append!(intervals, stewart_hierarchy_intervals(child))
     end
     return intervals
 end
 
 function validate_stewart_hierarchy(level::StewartAMRLevel)
     require_strictly_increasing(level.current.v, "Stewart level V")
-    child = level.child
-    isnothing(child) && return true
-    patch = normalized_patch_interval(
-        child.parent_interval, length(level.current.v),
-    )
-    expected = refined_v_patch_grid(
-        level.current.v, patch;
-        refinement_factor=(
-            length(child.current.v) - 1
-        ) ÷ (length(patch) - 1),
-    )
-    child.current.v == expected ||
-        throw(ArgumentError("child grid is not nested in its parent patch"))
-    child.current.u == level.current.u ||
-        throw(ArgumentError("Stewart levels are not synchronized in U"))
-    return validate_stewart_hierarchy(child)
+    previous_stop = 0
+    for child in level.children
+        patch = normalized_patch_interval(
+            child.parent_interval, length(level.current.v),
+        )
+        first(patch) > previous_stop ||
+            throw(ArgumentError("Stewart sibling patches overlap"))
+        previous_stop = last(patch)
+        expected = refined_v_patch_grid(
+            level.current.v, patch;
+            refinement_factor=(
+                length(child.current.v) - 1
+            ) ÷ (length(patch) - 1),
+        )
+        child.current.v == expected ||
+            throw(ArgumentError("child grid is not nested in its parent patch"))
+        child.current.u == level.current.u ||
+            throw(ArgumentError("Stewart levels are not synchronized in U"))
+        validate_stewart_hierarchy(child)
+    end
+    return true
 end
 
 function stewart_subtree_has_error(
@@ -458,19 +537,20 @@ function stewart_subtree_has_error(
     )
     isnothing(estimate) && return true
     !isempty(estimate.intervals) && return true
-    isnothing(level.child) && return false
-    return stewart_subtree_has_error(
-        level.child,
-        level.current,
-        estimate.full,
-        ep,
-        config;
-        iterations,
-        hyperbolic_charge,
-        cell_solver,
-        newton_rtol,
-        newton_atol,
-    )
+    return any(level.children) do child
+        stewart_subtree_has_error(
+            child,
+            level.current,
+            estimate.full,
+            ep,
+            config;
+            iterations,
+            hyperbolic_charge,
+            cell_solver,
+            newton_rtol,
+            newton_atol,
+        )
+    end
 end
 
 function advance_stewart_level!(
@@ -526,28 +606,41 @@ function advance_stewart_level!(
             level.level,
             isnothing(estimate) ? nothing : estimate.max_error,
         )
-        child_has_error = !isnothing(level.child) &&
-                          !isnothing(estimate) &&
-                          stewart_subtree_has_error(
-            level.child,
-            lower,
-            upper,
-            ep,
-            config;
-            iterations,
-            hyperbolic_charge,
-            cell_solver,
-            newton_rtol,
-            newton_atol,
-        )
+        if config.reject_on_finest_lte &&
+           level.level + 1 >= config.max_levels &&
+           !isnothing(estimate) &&
+           !isempty(estimate.intervals)
+            throw(StewartFinestLTEError(level.level, estimate.max_error))
+        end
+        desired_intervals = isnothing(estimate) ?
+                            UnitRange{Int}[] :
+                            copy(estimate.intervals)
+        if !isnothing(estimate)
+            for child in level.children
+                if stewart_subtree_has_error(
+                    child,
+                    lower,
+                    upper,
+                    ep,
+                    config;
+                    iterations,
+                    hyperbolic_charge,
+                    cell_solver,
+                    newton_rtol,
+                    newton_atol,
+                )
+                    push!(desired_intervals, child.parent_interval)
+                end
+            end
+        end
         if level.level + 1 >= config.max_levels ||
            isnothing(estimate) ||
-           (isempty(estimate.intervals) && !child_has_error)
-            destroy_stewart_child!(level, stats)
-        elseif !isempty(estimate.intervals)
-            rebuild_stewart_child!(
+           isempty(desired_intervals)
+            destroy_stewart_children!(level, stats)
+        else
+            rebuild_stewart_children!(
                 level,
-                only(estimate.intervals),
+                desired_intervals,
                 config,
                 stats,
             )
@@ -555,8 +648,7 @@ function advance_stewart_level!(
         level.steps_since_revision = 0
     end
 
-    child = level.child
-    if !isnothing(child)
+    for child in level.children
         refinement_factor = config.refinement_factor
         child_start_u = child.current.u
         child_start_u == lower.u ||
@@ -616,7 +708,7 @@ function advance_stewart_level!(
         row=upper,
         estimate=estimate,
         revised=revise,
-        has_child=!isnothing(level.child),
+        has_child=!isempty(level.children),
         level=level.level,
     )
 end
@@ -648,11 +740,15 @@ function advance_stewart_hierarchy!(
     start_u = hierarchy.root.current.u
     target_u > start_u ||
         throw(ArgumentError("target U must exceed the hierarchy root U"))
+    baseline_root = copy_stewart_topology(hierarchy.root)
+    baseline_stats = copy_stewart_stats(hierarchy.stats)
     trial_target = target_u
     last_error = nothing
+    finest_lte_rejections = 0
 
     for attempt in 0:max_backtracks
-        trial = deepcopy(hierarchy)
+        hierarchy.root = copy_stewart_topology(baseline_root)
+        hierarchy.stats = copy_stewart_stats(baseline_stats)
         boundary_point = u -> gp2026_na_boundary_point(
             u, ep;
             U0,
@@ -662,12 +758,12 @@ function advance_stewart_hierarchy!(
         )
         result = try
             advance_stewart_level!(
-                trial.root,
+                hierarchy.root,
                 trial_target,
                 boundary_point,
                 ep,
-                trial.config,
-                trial.stats;
+                hierarchy.config,
+                hierarchy.stats;
                 iterations,
                 hyperbolic_charge,
                 cell_solver,
@@ -675,16 +771,19 @@ function advance_stewart_hierarchy!(
                 newton_atol,
             )
         catch error
-            if !backtrack_on_failure || !(error isa ErrorException)
+            retryable = error isa ErrorException ||
+                        error isa StewartFinestLTEError
+            if !backtrack_on_failure || !retryable
                 rethrow()
             end
+            finest_lte_rejections += error isa StewartFinestLTEError
             last_error = error
             nothing
         end
         if !isnothing(result)
-            trial.stats.rejected_root_steps += attempt
-            hierarchy.root = trial.root
-            hierarchy.stats = trial.stats
+            hierarchy.stats.rejected_root_steps += attempt
+            hierarchy.stats.rejected_finest_lte_steps +=
+                finest_lte_rejections
             validate_stewart_hierarchy(hierarchy.root)
             return merge(
                 result,
@@ -704,6 +803,8 @@ function advance_stewart_hierarchy!(
         trial_target > start_u || break
     end
 
+    hierarchy.root = baseline_root
+    hierarchy.stats = baseline_stats
     isnothing(last_error) &&
         throw(ErrorException("Stewart root step failed without a captured solver error"))
     throw(last_error)

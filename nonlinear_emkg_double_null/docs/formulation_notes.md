@@ -1130,25 +1130,28 @@ finite corrected parent row, and maximum raw physical correction `1.93e-7`.
 
 ### Persistent Hamade-Stewart hierarchy
 
-`src/StewartAMR.jl` now implements the simplified linked-list algorithm of
-Hamadé and Stewart, section 3 of `gr-qc/9506044`. It has one buffered error
-cluster per level, as in their simplified code, and supports:
+`src/StewartAMR.jl` now implements the characteristic hierarchy algorithm of
+Hamadé and Stewart, section 3 of `gr-qc/9506044`, extended to multiple
+buffered sibling patches per parent. It supports:
 
 1. persistent child grids between revisions;
 2. factor-four refinement in both `U` and `V` by default;
 3. revision after a configurable fixed number of level steps;
 4. dynamic child creation, rebuilding, and destruction;
-5. recursively many child generations with grandchild containment;
-6. parent-to-child boundary interpolation during `U` subcycling;
-7. finest-to-coarsest injection at synchronized `U`;
-8. outward `V` reintegration after an injected patch endpoint.
+5. disjoint connected-component sibling patches with configurable gap merging
+   and a patch-count cap;
+6. recursively many child generations;
+7. parent-to-child boundary interpolation during `U` subcycling;
+8. left-to-right finest-to-coarsest injection at synchronized `U`;
+9. outward `V` reintegration after every injected patch endpoint;
+10. optional rejection when the finest-level LTE still exceeds tolerance.
 
 `evolve_gp2026_u_adaptive(...; bo_amr=true)` now uses this persistent
 hierarchy. The disposable `advance_u_row_berger_oliger` path is retained only
 as a local regression utility. Unit tests exercise two-level persistence,
-`1:4:16` recursive step counts, patch rebuilding and destruction, grandchild
-containment, coincident-point injection, suffix reintegration, and driver
-integration.
+multiple evolved siblings, recursive subcycling, patch rebuilding and
+destruction, coincident-point injection, causal suffix reintegration,
+finest-LTE rejection, topology-only rollback, and driver integration.
 
 `examples/convergence_gp2026_stewart_amr.jl` evolves exact extremal RN through
 `U=0`. With one factor-four child level it gives:
@@ -1224,17 +1227,81 @@ Hierarchy-depth saturation is visible near the quoted threshold. Stopping at
 the first trapped row gives `V=16.9981` with three levels and `V=17.0750`
 with four factor-four levels. The crossing survives the extra generation,
 but the fourth-level normalized LTE is still about `15.6`; its precise
-location is not tolerance-resolved. The next numerical task is to reduce the
-cost of the allocating cell Newton solve and permit another generation or
-multiple localized sibling patches. The remaining physics audit should focus
-on the extremal-gauge coordinate-origin ambiguity in Appendix A, because the
-implemented initial constraints themselves close at roundoff.
+location is not tolerance-resolved.
 
-This is the simplified Stewart algorithm, not the general multi-cluster
-Berger-Oliger tree. Multiple sibling patches are intentionally absent.
-Conservative refluxing is also absent because the current characteristic
-cell equations are not written as finite-volume flux balances; it becomes
-necessary if that reformulation is adopted.
+The cell Newton path now owns one reusable workspace per row advance. Residual
+evaluation, finite-difference Jacobian construction, damping trials, and the
+pivoted `7x7` linear solve all operate in place. A 500-cell direct-Newton row
+allocates about 177 bytes per cell including construction of the output row.
+Rejected Stewart root steps no longer `deepcopy` all field vectors: a
+topology-only snapshot shares the immutable completed `NLRow` objects and
+copies only hierarchy nodes and statistics.
+
+The quoted-critical three-level run, including 195 rejected root steps,
+completes in `27.9 s`, allocates `4.30 GB` across all recursively generated
+rows, and reproduces `Vtrap=12.8800186240`. The four-level
+stop-at-first-crossing run completes in `136.7 s` and reproduces
+`V=17.07502566`; this was roughly twice as fast as the previous observed
+runtime. Its `20.9 GB` allocation total is now dominated by the millions of
+intermediate full/half rows and LTE arrays rather than cell-local Newton
+scratch space.
+
+### Sibling patches and acceptance controls
+
+LTE flags are now split into buffered connected components. Overlapping or
+nearby components are merged and at most eight sibling patches are retained
+by default. Siblings are advanced and injected from small to large `V`; after
+each injection the downstream coarse suffix is re-integrated before the next
+sibling obtains its parent boundary data. This preserves the causal ordering
+of the characteristic equations.
+
+Localization is conditional on the error actually being local. On the first
+GP step with the strict all-field norm, `r`, `log(f)`, and `eta` are above
+tolerance at 500 of 501 points, so a full-domain child is required. At later
+times the `Q0=1.001`, `Delta V=0.08` run splits its finest level into two
+patches and uses 5,998 points instead of 8,001. At `Delta V=0.04`, the
+geometry error remains global and the code correctly retains a full patch.
+A charge-only negative control localizes to one 289-point child and runs in
+8.8 seconds, but moves the first crossing from `U≈0.023` to `U≈-0.056`; it is
+therefore not a valid production refinement norm.
+
+The optional `reject_on_finest_lte` setting rejects the complete root step
+when a revision on the maximum level remains above tolerance. The hierarchy
+is rolled back and the root step is halved transactionally. The current
+`Q0=1.001` control results are:
+
+| control | `Vtrap` | conclusion |
+| :--- | ---: | :--- |
+| all fields, `Delta V=0.08,0.04,0.02`, strict norm without LTE rejection | `7.739510, 7.739158, 7.739127` | strong root-`V` convergence |
+| two levels, `Delta V=0.08` | `7.107288` | rejected as under-resolved |
+| three levels, tolerance relaxed by ten | `7.747665` | `1.1e-3` fractional tolerance effect |
+| accepted LTE, `C=0.6`, `Delta V=0.08,0.04` | `7.72110, 7.71993` | `1.6e-4` root-`V` effect |
+| accepted LTE, `Vmax=40,80` | `7.72110, 7.72214` | `1.3e-4` outer-boundary effect |
+| accepted LTE, `C=0.6,0.4` | `7.72110, 7.76051` | `5.1e-3` controller effect; dominant error |
+
+The accepted runs have maximum finest-level normalized LTE below one. The
+strict `(atol,rtol)=(1e-10,1e-8)` all-field acceptance run is prohibitively
+expensive at three levels; the control table uses `(1e-9,1e-7)`. The remaining
+`C` dependence means that horizon formation is resolved qualitatively but
+`Vtrap` is not yet a sub-percent precision observable.
+
+`refined_vtrap_sample` fits the nonuniform three-row apparent-horizon crossing
+curve near its minimum. `trapped_surface_invariants` then uses the
+marginal-surface identity `M=(r^2+Q^2)/(2r)` to report gauge-invariant
+quantities without coordinate derivatives. For the accepted `Q0=1.001`
+runs, the nucleating surface has
+
+```text
+M = 1.00290--1.00294,
+1-Q/M = 3.2e-11--5.3e-11,
+|1-r/M| = 0.8e-5--1.0e-5.
+```
+
+This confirms formation through an almost degenerate marginal pair. The
+Reissner-Nordstrom surface-gravity proxy is `0.8e-5--1.0e-5`, but its
+remaining controller sensitivity prevents using it for a critical scaling
+fit. Conservative refluxing is still absent because the characteristic cell
+equations are not finite-volume flux balances.
 
 `examples/check_charged_horizon_density.jl` is the charged-sector target
 from Gelles/Pretorius. For extremal `eQ0=0.6`, the expected late-time

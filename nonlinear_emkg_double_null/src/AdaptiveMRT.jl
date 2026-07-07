@@ -980,11 +980,14 @@ function advance_u_row(previous::NLRow, south::NLPoint, ep::EvolutionParams;
     st.Au[2, 1] = south.Au
     st.Av[2, 1] = south.Av
     st.Q[2, 1] = south.Q
+    newton_workspace = cell_solver === :newton_direct ?
+                       NewtonCellWorkspace(eltype(st.r)) :
+                       nothing
     for j in 1:length(previous.v)-1
         step_nonlinear_cell!(st, grid, ep, 1, j;
                              iterations, subtract_rn_background, reduced_scalar,
                              hyperbolic_charge, cell_solver, newton_rtol,
-                             newton_atol)
+                             newton_atol, newton_workspace)
     end
     return row_from_rectangular(st, grid, 2)
 end

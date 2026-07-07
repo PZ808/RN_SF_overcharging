@@ -28,12 +28,24 @@ function finite_row(row)
            all(isfinite, row.Q) && all(>(0), row.r)
 end
 
-function hierarchy_point_counts(level)
-    counts = Int[length(level.current.v)]
-    current = level
-    while !isnothing(current.child)
-        current = current.child
-        push!(counts, length(current.current.v))
+function hierarchy_point_counts(level, counts=Int[])
+    while length(counts) <= level.level
+        push!(counts, 0)
+    end
+    counts[level.level + 1] += length(level.current.v)
+    for child in level.children
+        hierarchy_point_counts(child, counts)
+    end
+    return counts
+end
+
+function hierarchy_patch_counts(level, counts=Int[])
+    while length(counts) <= level.level
+        push!(counts, 0)
+    end
+    counts[level.level + 1] += 1
+    for child in level.children
+        hierarchy_patch_counts(child, counts)
     end
     return counts
 end
@@ -68,6 +80,18 @@ function main()
     )
     bo_atol = real_argument(13, 1.0e-8)
     stop_on_trap = boolean_argument(14, false)
+    refinement_fields = symbol_argument(
+        15,
+        "all",
+        Dict(
+            "all" => (:r, :logf, :psi_abs, :Q, :eta),
+            "matter" => (:psi_abs, :Q),
+            "charge" => (:Q,),
+        ),
+    )
+    max_sibling_patches = integer_argument(16, 8)
+    merge_gap_points = integer_argument(17, 2)
+    reject_on_finest_lte = boolean_argument(18, true)
 
     U0 = -1.0
     ep = EvolutionParams(
@@ -98,6 +122,10 @@ function main()
         rtol=bo_rtol,
         order=2,
         buffer_points=4,
+        merge_gap_points=merge_gap_points,
+        max_sibling_patches=max_sibling_patches,
+        fields=refinement_fields,
+        reject_on_finest_lte=reject_on_finest_lte,
         reintegrate=true,
     )
     hierarchy = initialize_stewart_hierarchy(initial; config)
@@ -142,6 +170,7 @@ function main()
                      length(rows) >= max_rows ? :max_rows :
                      :stopped
     vtrap = vtrap_diagnostic(valid_rows; missing_status)
+    refined_vtrap = refined_vtrap_sample(valid_rows)
     throat = throat_row_diagnostics(final)
 
     println("# GP2026 persistent Hamade-Stewart AMR")
@@ -161,6 +190,10 @@ function main()
         ", max_levels=", max_levels,
         ", revision_interval=", revision_interval,
         ", stop_on_trap=", stop_on_trap,
+        ", fields=", refinement_fields,
+        ", max_siblings=", max_sibling_patches,
+        ", merge_gap_points=", merge_gap_points,
+        ", reject_finest_lte=", reject_on_finest_lte,
     )
     println("stored rows = ", length(rows))
     println("valid rows = ", length(valid_rows))
@@ -168,12 +201,22 @@ function main()
     println("termination = ", missing_status)
     println("Vtrap status = ", vtrap.status)
     println("direct Vtrap = ", vtrap.trap)
+    println("quadratic Vtrap = ", refined_vtrap)
+    if !isnothing(vtrap.trap)
+        println("Vtrap invariants = ",
+                trapped_surface_invariants(vtrap.trap))
+    end
+    if !isnothing(refined_vtrap)
+        println("quadratic Vtrap invariants = ",
+                trapped_surface_invariants(refined_vtrap))
+    end
     println("closest Vtrap proxy = ", vtrap.closest)
     println("throat min(r-|Q|) = ", throat.min_y)
     println("throat max rho = ", throat.max_rho)
     println("hierarchy depth = ", stewart_hierarchy_depth(hierarchy.root))
     println("hierarchy point counts = ", hierarchy_point_counts(hierarchy.root))
-    println("hierarchy parent intervals = ",
+    println("hierarchy patch counts = ", hierarchy_patch_counts(hierarchy.root))
+    println("hierarchy patches = ",
             stewart_hierarchy_intervals(hierarchy.root))
     println("level steps = ", hierarchy.stats.level_steps)
     println("level revisions = ", hierarchy.stats.revisions)
@@ -186,6 +229,8 @@ function main()
             hierarchy.stats.suffix_reintegrations)
     println("precision fallbacks = ", hierarchy.stats.precision_fallbacks)
     println("rejected root steps = ", hierarchy.stats.rejected_root_steps)
+    println("rejected finest-LTE steps = ",
+            hierarchy.stats.rejected_finest_lte_steps)
     println("next controlled Delta U = ", next_step.selected)
 end
 

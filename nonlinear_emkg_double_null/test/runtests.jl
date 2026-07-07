@@ -540,6 +540,11 @@ end
 end
 
 @testset "persistent Hamade-Stewart hierarchy" begin
+    matrix = [3.0 2.0; 1.0 2.0]
+    rhs = [5.0, 5.0]
+    @test NonlinearEMKGDoubleNull.solve_dense_linear_system!(matrix, rhs)
+    @test rhs ≈ [0.0, 2.5]
+
     ep = EvolutionParams(
         rn=RNParams(1.0, 1.0),
         scalar_charge=0.6,
@@ -589,6 +594,20 @@ end
         persistent.config,
         persistent.stats,
     )
+    topology_copy =
+        NonlinearEMKGDoubleNull.copy_stewart_topology(persistent.root)
+    stats_copy =
+        NonlinearEMKGDoubleNull.copy_stewart_stats(persistent.stats)
+    @test topology_copy !== persistent.root
+    @test topology_copy.current === persistent.root.current
+    @test topology_copy.children !== persistent.root.children
+    @test topology_copy.children[1] !== persistent.root.children[1]
+    @test topology_copy.children[1].current ===
+          persistent.root.children[1].current
+    @test stats_copy !== persistent.stats
+    @test stats_copy.level_steps !== persistent.stats.level_steps
+    push!(stats_copy.level_steps, 99)
+    @test isempty(persistent.stats.level_steps)
     persistent.root.steps_since_revision = 0
     first_result = advance_stewart_hierarchy!(
         persistent, -0.98, ep;
@@ -600,12 +619,12 @@ end
         iterations=12,
         cell_solver=:newton_direct,
     )
-    @test persistent.root.child.parent_interval == patch
+    @test only(persistent.root.children).parent_interval == patch
     @test persistent.stats.child_creations == 1
     @test first_result.depth == 2
     @test second_result.depth == 2
     @test second_result.row.u == -0.96
-    @test persistent.root.child.current.u == -0.96
+    @test only(persistent.root.children).current.u == -0.96
     @test persistent.stats.level_steps == [2, 8]
     @test persistent.stats.injections == 2
     @test persistent.stats.suffix_reintegrations == 2
@@ -613,9 +632,9 @@ end
     for (offset, parent_index) in enumerate(patch)
         child_index = 1 + 4 * (offset - 1)
         @test persistent.root.current.r[parent_index] ≈
-              persistent.root.child.current.r[child_index]
+              only(persistent.root.children).current.r[child_index]
         @test persistent.root.current.Q[parent_index] ≈
-              persistent.root.child.current.Q[child_index]
+              only(persistent.root.children).current.Q[child_index]
     end
 
     destruction_config = StewartAMRConfig(
@@ -642,7 +661,7 @@ end
         cell_solver=:newton_direct,
     )
     @test destruction_result.depth == 1
-    @test isnothing(destruction.root.child)
+    @test isempty(destruction.root.children)
     @test destruction.stats.child_destructions == 1
 
     containment_config = StewartAMRConfig(
@@ -654,33 +673,78 @@ end
         initial;
         config=containment_config,
     )
-    NonlinearEMKGDoubleNull.rebuild_stewart_child!(
+    NonlinearEMKGDoubleNull.rebuild_stewart_children!(
         containment.root,
-        5:30,
+        UnitRange{Int}[5:12, 24:30],
         containment.config,
         containment.stats,
     )
+    @test length(containment.root.children) == 2
+    @test [child.parent_interval for child in containment.root.children] ==
+          [5:12, 24:30]
     NonlinearEMKGDoubleNull.rebuild_stewart_child!(
-        containment.root.child,
-        30:60,
-        containment.config,
-        containment.stats,
-    )
-    old_grandchild_range = extrema(containment.root.child.child.current.v)
-    NonlinearEMKGDoubleNull.rebuild_stewart_child!(
-        containment.root,
-        20:25,
+        containment.root.children[1],
+        4:20,
         containment.config,
         containment.stats,
     )
     @test stewart_hierarchy_depth(containment.root) == 3
-    @test first(containment.root.child.current.v) <=
-          first(old_grandchild_range)
-    @test last(containment.root.child.current.v) >=
-          last(old_grandchild_range)
-    @test extrema(containment.root.child.child.current.v) ==
-          old_grandchild_range
+    @test length(containment.root.children[1].children) == 1
+    @test isempty(containment.root.children[2].children)
     @test validate_stewart_hierarchy(containment.root)
+    merged = NonlinearEMKGDoubleNull.merge_stewart_patch_intervals(
+        UnitRange{Int}[2:5, 8:10, 20:22],
+        30;
+        merge_gap_points=2,
+        max_patches=2,
+    )
+    @test merged == [2:10, 20:22]
+
+    sibling_config = StewartAMRConfig(
+        refinement_factor=4,
+        revision_interval=100,
+        max_levels=2,
+        atol=1.0,
+        rtol=0.0,
+    )
+    siblings = initialize_stewart_hierarchy(
+        initial;
+        config=sibling_config,
+    )
+    sibling_patches = UnitRange{Int}[5:12, 24:30]
+    NonlinearEMKGDoubleNull.rebuild_stewart_children!(
+        siblings.root,
+        sibling_patches,
+        siblings.config,
+        siblings.stats,
+    )
+    siblings.root.steps_since_revision = 0
+    sibling_result = advance_stewart_hierarchy!(
+        siblings,
+        -0.98,
+        ep;
+        iterations=12,
+        cell_solver=:newton_direct,
+    )
+    @test sibling_result.depth == 2
+    @test length(siblings.root.children) == 2
+    @test siblings.stats.level_steps == [1, 8]
+    @test siblings.stats.injections == 2
+    @test siblings.stats.suffix_reintegrations == 2
+    @test all(
+        child.current.u == siblings.root.current.u
+        for child in siblings.root.children
+    )
+    for child in siblings.root.children
+        for (offset, parent_index) in enumerate(child.parent_interval)
+            child_index = 1 + 4 * (offset - 1)
+            @test siblings.root.current.r[parent_index] ≈
+                  child.current.r[child_index]
+            @test siblings.root.current.Q[parent_index] ≈
+                  child.current.Q[child_index]
+        end
+    end
+    @test validate_stewart_hierarchy(siblings.root)
 
     recursive_config = StewartAMRConfig(
         refinement_factor=4,
@@ -700,13 +764,50 @@ end
         cell_solver=:newton_direct,
     )
     @test recursive_result.depth == 3
-    @test recursive.stats.level_steps == [1, 4, 16]
+    @test recursive.stats.level_steps[1] == 1
+    @test recursive.stats.level_steps[2] ==
+          4 * length(recursive.root.children)
+    @test recursive.stats.level_steps[3] ==
+          16 * sum(length(child.children)
+                   for child in recursive.root.children)
     @test recursive.stats.max_level_reached == 2
     @test recursive.stats.injections >= 5
-    @test recursive.root.current.u ==
-          recursive.root.child.current.u ==
-          recursive.root.child.child.current.u
+    function hierarchy_is_synchronized(level, u)
+        level.current.u == u || return false
+        return all(
+            hierarchy_is_synchronized(child, u)
+            for child in level.children
+        )
+    end
+    @test hierarchy_is_synchronized(
+        recursive.root,
+        recursive.root.current.u,
+    )
     @test validate_stewart_hierarchy(recursive.root)
+
+    rejecting_config = StewartAMRConfig(
+        revision_interval=1,
+        max_levels=1,
+        atol=1.0e-10,
+        rtol=1.0e-8,
+        reject_on_finest_lte=true,
+    )
+    rejecting = initialize_stewart_hierarchy(
+        initial;
+        config=rejecting_config,
+    )
+    rejecting_result = advance_stewart_hierarchy!(
+        rejecting,
+        -0.98,
+        ep;
+        iterations=12,
+        cell_solver=:newton_direct,
+    )
+    @test rejecting_result.backtracks > 0
+    @test rejecting_result.accepted_target_u < -0.98
+    @test rejecting.stats.rejected_finest_lte_steps ==
+          rejecting_result.backtracks
+    @test rejecting.root.current.u == rejecting_result.accepted_target_u
 
     vacuum = EvolutionParams(
         rn=RNParams(1.0, 1.0),
@@ -788,6 +889,26 @@ end
     end
     @test 3.7 < vacuum_errors[1] / vacuum_errors[2] < 4.3
     @test 3.7 < vacuum_logf_errors[1] / vacuum_logf_errors[2] < 4.3
+end
+
+@testset "trapped-surface invariants" begin
+    sample = TrappedSurfaceSample(3, 0.1, 12.0, 2.0, 1.0, 0.0)
+    invariants = trapped_surface_invariants(sample)
+    @test invariants.mass == 1.25
+    @test invariants.q_over_m == 0.8
+    @test invariants.r_over_m == 1.6
+    @test invariants.rn_surface_gravity_proxy == 0.1875
+
+    left = TrappedSurfaceSample(1, -1.0, 5.25, 1.0, 0.9, 0.0)
+    center = TrappedSurfaceSample(2, 0.0, 3.25, 2.0, 1.0, 0.0)
+    right = TrappedSurfaceSample(3, 2.0, 5.25, 4.0, 1.2, 0.0)
+    refined = NonlinearEMKGDoubleNull.quadratic_trapped_surface_sample(
+        left,
+        center,
+        right,
+    )
+    @test refined.u ≈ 0.5
+    @test refined.v ≈ 3.0
 end
 
 @testset "MRT ingoing initial leg normalization" begin

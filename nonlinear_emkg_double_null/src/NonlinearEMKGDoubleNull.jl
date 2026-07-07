@@ -67,7 +67,7 @@ export charged_mass_flux_u_profile, charged_flux_integrated_mass_profile
 export outgoing_expansion_profile, apparent_horizon_location
 export TrappedSurfaceSample, VTrapDiagnostic
 export row_outgoing_expansion, row_expansion_minimum, row_apparent_horizon_crossing
-export vtrap_diagnostic
+export vtrap_diagnostic, refined_vtrap_sample, trapped_surface_invariants
 export gp2026_rphi_profile, gp2026_horizon_rphi_series
 export ThroatBoundaryObservables, throat_boundary_observables
 export cell_equation_residual_summary

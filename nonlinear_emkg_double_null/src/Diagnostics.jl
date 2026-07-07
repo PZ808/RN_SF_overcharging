@@ -505,6 +505,34 @@ struct VTrapDiagnostic{T<:Real}
 end
 
 """
+Gauge-invariant quasi-local quantities at a marginally trapped sphere.
+
+At `r_V=0`, the renormalized Hawking identity reduces to
+`M=(r^2+Q^2)/(2r)` without requiring coordinate derivatives. The
+surface-gravity value is the Reissner-Nordstrom proxy constructed from this
+instantaneous `(M,Q)` pair; it is a diagnostic, not an assumption that the
+surface is stationary.
+"""
+function trapped_surface_invariants(sample::TrappedSurfaceSample)
+    r = sample.r
+    q = sample.q
+    r > zero(r) || throw(ArgumentError("trapped-surface radius must be positive"))
+    mass = (r^2 + q^2) / (2r)
+    discriminant = max(mass^2 - q^2, zero(mass))
+    root = sqrt(discriminant)
+    outer_radius = mass + root
+    kappa_proxy = root / outer_radius^2
+    return (
+        mass=mass,
+        q_over_m=q / mass,
+        r_over_m=r / mass,
+        one_minus_q_over_m=one(mass) - q / mass,
+        one_minus_r_over_m=one(mass) - r / mass,
+        rn_surface_gravity_proxy=kappa_proxy,
+    )
+end
+
+"""
 Centered outgoing expansion proxy `r_V` on a single GP2026 `U` row.
 
 The apparent-horizon condition used by Gelles-Pretorius is a sign flip of the
@@ -539,6 +567,73 @@ function row_apparent_horizon_crossing(row::NLRow; row_index::Int=0)
         segment_value(row.r, i - 1, fraction),
         segment_value(row.Q, i - 1, fraction),
         zero(rv[i]),
+    )
+end
+
+function quadratic_sample_value(left, center, right, x)
+    x1 = left.u - center.u
+    x3 = right.u - center.u
+    xx = x - center.u
+    weight1 = xx * (xx - x3) / (x1 * (x1 - x3))
+    weight2 = (xx - x1) * (xx - x3) / (x1 * x3)
+    weight3 = xx * (xx - x1) / (x3 * (x3 - x1))
+    return weight1, weight2, weight3
+end
+
+function quadratic_trapped_surface_sample(
+    left::TrappedSurfaceSample,
+    center::TrappedSurfaceSample,
+    right::TrappedSurfaceSample,
+)
+    left.u < center.u < right.u || return center
+    x1 = left.u - center.u
+    x3 = right.u - center.u
+    y1 = left.v - center.v
+    y3 = right.v - center.v
+    determinant = x1^2 * x3 - x3^2 * x1
+    determinant != zero(determinant) || return center
+    curvature = (y1 * x3 - y3 * x1) / determinant
+    slope = (x1^2 * y3 - x3^2 * y1) / determinant
+    curvature > zero(curvature) || return center
+    offset = -slope / (2curvature)
+    x1 < offset < x3 || return center
+    u = center.u + offset
+    weights = quadratic_sample_value(left, center, right, u)
+    blend(field) =
+        weights[1] * getproperty(left, field) +
+        weights[2] * getproperty(center, field) +
+        weights[3] * getproperty(right, field)
+    return TrappedSurfaceSample(
+        center.row_index,
+        u,
+        center.v + slope * offset + curvature * offset^2,
+        blend(:r),
+        blend(:q),
+        zero(center.rv),
+    )
+end
+
+"""
+Refine the discrete minimum of the apparent-horizon crossing curve in `U`.
+
+The direct GP diagnostic minimizes crossing `V` over completed rows. When
+crossings on both neighboring rows are available, this helper fits the local
+nonuniform three-point parabola and returns its interior vertex. It falls back
+to the discrete sample unless the fit is convex and bracketed.
+"""
+function refined_vtrap_sample(rows::AbstractVector{<:NLRow})
+    crossings = TrappedSurfaceSample[]
+    for (row_index, row) in pairs(rows)
+        crossing = row_apparent_horizon_crossing(row; row_index)
+        isnothing(crossing) || push!(crossings, crossing)
+    end
+    isempty(crossings) && return nothing
+    index = argmin(sample.v for sample in crossings)
+    1 < index < length(crossings) || return crossings[index]
+    return quadratic_trapped_surface_sample(
+        crossings[index - 1],
+        crossings[index],
+        crossings[index + 1],
     )
 end
 
