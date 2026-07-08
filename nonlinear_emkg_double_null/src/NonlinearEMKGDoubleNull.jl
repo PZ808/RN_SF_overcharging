@@ -12,7 +12,7 @@ include("Evolution.jl")
 include("Diagnostics.jl")
 
 export RNParams, EvolutionParams, Grid, State
-export compact_mrt_grid, initialize_state, evolve!, maxwell_residuals
+export compact_mrt_grid, ef_v_mrt_grid, initialize_state, evolve!, maxwell_residuals
 export MetricState, einstein_backreaction_rhs!
 export NLState, initialize_nonlinear_state, evolve_nonlinear!, mrt2013_background_f
 export mrt2013_grid, mrt2013_areal_radius, mrt2013_metric_f, initialize_mrt2013_uncharged_ingoing!
@@ -47,6 +47,7 @@ export StewartAMRConfig, StewartAMRStats, StewartAMRLevel, StewartAMRHierarchy
 export initialize_stewart_hierarchy, advance_stewart_hierarchy!
 export stewart_hierarchy_depth, stewart_hierarchy_intervals
 export validate_stewart_hierarchy, interpolate_parent_boundary
+export StewartRootStepController, deepest_recent_lte, next_stewart_root_du
 export interpolate_slice, refine_u_grid, refine_slice, truncate_slice
 export refine_slice_constrained
 export spacing_refinement_flags, variation_refinement_flags, point_splitting_flags
@@ -65,9 +66,10 @@ export charged_charge_flux_u_profile, charged_charge_flux_v_profile
 export charged_flux_integrated_charge_profile
 export charged_mass_flux_u_profile, charged_flux_integrated_mass_profile
 export outgoing_expansion_profile, apparent_horizon_location
-export TrappedSurfaceSample, VTrapDiagnostic
+export TrappedSurfaceSample, VTrapDiagnostic, HorizonChargeDensitySample
 export row_outgoing_expansion, row_expansion_minimum, row_apparent_horizon_crossing
 export vtrap_diagnostic, refined_vtrap_sample, trapped_surface_invariants
+export row_horizon_charge_density_sample, apparent_horizon_charge_density_series
 export gp2026_rphi_profile, gp2026_horizon_rphi_series
 export ThroatBoundaryObservables, throat_boundary_observables
 export cell_equation_residual_summary

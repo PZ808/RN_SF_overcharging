@@ -1686,11 +1686,11 @@ flagged, one synchronized fine `V` patch. This first driver integration does
 not yet combine BO correction with backtracking.
 
 With `bo_amr=true`, the driver uses the persistent simplified Hamade-Stewart
-hierarchy implemented in `StewartAMR.jl`: one buffered child patch per level,
+hierarchy implemented in `StewartAMR.jl`: buffered sibling child patches,
 factor-four refinement in both null directions by default, recursive
-subcycling, finest-first injection, and downstream `V` reintegration. The
-older disposable single-patch operation remains available separately through
-`advance_u_row_berger_oliger`.
+subcycling, left-to-right injection, downstream `V` reintegration, and
+optional finest-level LTE rejection. The older disposable single-patch
+operation remains available separately through `advance_u_row_berger_oliger`.
 
 The GP production defaults are `pulse_leg_gauge=:areal_affine` and
 `cell_solver=:newton_direct`. The latter solves the coupled seven-field cell
@@ -1729,9 +1729,12 @@ function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6,
                                   bo_order::Int=2,
                                   bo_buffer_points::Int=4,
                                   bo_cluster::Symbol=:all,
+                                  bo_merge_gap_points::Int=2,
+                                  bo_max_sibling_patches::Int=8,
                                   bo_refinement_factor::Int=4,
                                   bo_revision_interval::Int=4,
                                   bo_max_levels::Int=4,
+                                  bo_reject_on_finest_lte::Bool=false,
                                   bo_reintegrate::Bool=true)
     C > 0 || throw(ArgumentError("C must be positive"))
     substep_C > 0 || throw(ArgumentError("substep_C must be positive"))
@@ -1748,10 +1751,6 @@ function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6,
         throw(ArgumentError("substep_control must be :none, :outer, :max_row, :geometric, :throat, :eta, or :local"))
     bo_amr && backtrack &&
         throw(ArgumentError("bo_amr and backtrack cannot be combined yet"))
-    bo_amr && bo_cluster !== :all &&
-        throw(ArgumentError(
-            "the simplified Stewart hierarchy supports one cluster per level",
-        ))
     bo_hierarchy = if bo_amr
         config = StewartAMRConfig(
             refinement_factor=bo_refinement_factor,
@@ -1762,6 +1761,9 @@ function evolve_gp2026_u_adaptive(initial::NLRow, ep::EvolutionParams; Umax=1.6,
             rtol=bo_rtol,
             order=bo_order,
             buffer_points=bo_buffer_points,
+            merge_gap_points=bo_merge_gap_points,
+            max_sibling_patches=bo_max_sibling_patches,
+            reject_on_finest_lte=bo_reject_on_finest_lte,
             reintegrate=bo_reintegrate,
         )
         initialize_stewart_hierarchy(initial; config)

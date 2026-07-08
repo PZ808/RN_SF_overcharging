@@ -28,6 +28,21 @@ function finite_row(row)
            all(isfinite, row.Q) && all(>(0), row.r)
 end
 
+function quantile_like(x, q)
+    xs = sort(collect(x))
+    isempty(xs) && return nothing
+    k = clamp(Int(round(1 + q * (length(xs) - 1))), 1, length(xs))
+    return xs[k]
+end
+
+function relative_std(x)
+    isempty(x) && return NaN
+    mean = sum(x) / length(x)
+    mean == 0 && return Inf
+    variance = sum((value - mean)^2 for value in x) / length(x)
+    return sqrt(variance) / abs(mean)
+end
+
 function hierarchy_point_counts(level, counts=Int[])
     while length(counts) <= level.level
         push!(counts, 0)
@@ -92,6 +107,15 @@ function main()
     max_sibling_patches = integer_argument(16, 8)
     merge_gap_points = integer_argument(17, 2)
     reject_on_finest_lte = boolean_argument(18, true)
+    root_stepper = symbol_argument(
+        19,
+        "paper",
+        Dict("paper" => :paper, "lte" => :lte),
+    )
+    controller_target_lte = real_argument(20, 0.7)
+    controller_safety = real_argument(21, 0.9)
+    controller_min_factor = real_argument(22, 0.5)
+    controller_max_factor = real_argument(23, 1.5)
 
     U0 = -1.0
     ep = EvolutionParams(
@@ -130,12 +154,27 @@ function main()
     )
     hierarchy = initialize_stewart_hierarchy(initial; config)
     rows = NLRow[initial]
+    controller = StewartRootStepController(
+        target_lte=controller_target_lte,
+        safety=controller_safety,
+        min_factor=controller_min_factor,
+        max_factor=controller_max_factor,
+        min_du=0.0,
+        max_du=Inf,
+    )
+    next_du = gp2026_row_step_du(rows, C, step_control).selected
+    accepted_lte = Float64[]
+    accepted_du = Float64[]
     while last(rows).u < Umax && length(rows) < max_rows
-        step = gp2026_row_step_du(rows, C, step_control)
-        du = step.selected
+        du = if root_stepper === :lte
+            next_du
+        else
+            gp2026_row_step_du(rows, C, step_control).selected
+        end
         isfinite(du) && du > 0 || break
-        target_u = min(Umax, last(rows).u + du)
-        target_u > last(rows).u || break
+        start_u = last(rows).u
+        target_u = min(Umax, start_u + du)
+        target_u > start_u || break
         result = advance_stewart_hierarchy!(
             hierarchy,
             target_u,
@@ -150,6 +189,18 @@ function main()
         )
         push!(rows, result.row)
         finite_row(result.row) || break
+        step_du = result.accepted_target_u - start_u
+        step_lte = deepest_recent_lte(hierarchy.stats)
+        push!(accepted_du, Float64(step_du))
+        push!(accepted_lte, Float64(step_lte))
+        if root_stepper === :lte
+            next_du = next_stewart_root_du(
+                controller,
+                step_du,
+                step_lte;
+                order=config.order,
+            )
+        end
         if stop_on_trap &&
            !isnothing(row_apparent_horizon_crossing(
                result.row;
@@ -172,6 +223,50 @@ function main()
     vtrap = vtrap_diagnostic(valid_rows; missing_status)
     refined_vtrap = refined_vtrap_sample(valid_rows)
     throat = throat_row_diagnostics(final)
+    horizon_charge = apparent_horizon_charge_density_series(valid_rows)
+    charge_pairs = sort(
+        [
+            (v=sample.v, density=abs(sample.surface_density),
+             flux_density=sample.flux_density_v,
+             radial_density=abs(sample.radial_density_proxy))
+            for sample in horizon_charge
+            if isfinite(sample.v) &&
+               isfinite(sample.surface_density) &&
+               abs(sample.surface_density) > 0
+        ];
+        by=pair -> pair.v,
+    )
+    charge_v = [pair.v for pair in charge_pairs]
+    charge_density_abs = [pair.density for pair in charge_pairs]
+    charge_late_vmin = quantile_like(charge_v, 0.65)
+    late_charge_density = isnothing(charge_late_vmin) ?
+                          Float64[] :
+                          [pair.density for pair in charge_pairs
+                           if pair.v >= charge_late_vmin]
+    charge_slope = if !isnothing(charge_late_vmin) &&
+                      length(late_charge_density) >= 2
+        finite_v = [pair.v for pair in charge_pairs
+                    if pair.v >= charge_late_vmin]
+        fit_power_law(finite_v, late_charge_density)[1]
+    else
+        NaN
+    end
+    late_radial_density = isnothing(charge_late_vmin) ?
+                          Float64[] :
+                          [pair.radial_density for pair in charge_pairs
+                           if pair.v >= charge_late_vmin &&
+                              isfinite(pair.radial_density) &&
+                              pair.radial_density > 0]
+    radial_slope = if !isnothing(charge_late_vmin) &&
+                      length(late_radial_density) >= 2
+        finite_v = [pair.v for pair in charge_pairs
+                    if pair.v >= charge_late_vmin &&
+                       isfinite(pair.radial_density) &&
+                       pair.radial_density > 0]
+        fit_power_law(finite_v, late_radial_density)[1]
+    else
+        NaN
+    end
 
     println("# GP2026 persistent Hamade-Stewart AMR")
     println(
@@ -194,6 +289,7 @@ function main()
         ", max_siblings=", max_sibling_patches,
         ", merge_gap_points=", merge_gap_points,
         ", reject_finest_lte=", reject_on_finest_lte,
+        ", root_stepper=", root_stepper,
     )
     println("stored rows = ", length(rows))
     println("valid rows = ", length(valid_rows))
@@ -211,6 +307,28 @@ function main()
                 trapped_surface_invariants(refined_vtrap))
     end
     println("closest Vtrap proxy = ", vtrap.closest)
+    println("horizon charge-density samples = ", length(horizon_charge))
+    println("horizon charge-density V range = ",
+            isempty(charge_v) ? nothing : extrema(charge_v))
+    println("horizon charge-density late Vmin = ", charge_late_vmin)
+    println("horizon |Q|/(4pi r^2) sorted first/last = ",
+            isempty(charge_density_abs) ? nothing :
+            (first(charge_density_abs), last(charge_density_abs)))
+    println("horizon Q_V/(4pi r^2) sorted first/last = ",
+            isempty(charge_pairs) ? nothing :
+            (first(charge_pairs).flux_density, last(charge_pairs).flux_density))
+    println("horizon |Q|/(4pi r^2) late slope = ", charge_slope)
+    println("horizon |Q|/(4pi r^2) late max/min = ",
+            isempty(late_charge_density) ? nothing :
+            maximum(late_charge_density) / minimum(late_charge_density))
+    println("horizon |Q|/(4pi r^2) late relative std = ",
+            relative_std(late_charge_density))
+    println("horizon derivative-density proxy late slope = ", radial_slope)
+    println("horizon derivative-density proxy late max/min = ",
+            isempty(late_radial_density) ? nothing :
+            maximum(late_radial_density) / minimum(late_radial_density))
+    println("horizon derivative-density proxy late relative std = ",
+            relative_std(late_radial_density))
     println("throat min(r-|Q|) = ", throat.min_y)
     println("throat max rho = ", throat.max_rho)
     println("hierarchy depth = ", stewart_hierarchy_depth(hierarchy.root))
@@ -231,7 +349,12 @@ function main()
     println("rejected root steps = ", hierarchy.stats.rejected_root_steps)
     println("rejected finest-LTE steps = ",
             hierarchy.stats.rejected_finest_lte_steps)
-    println("next controlled Delta U = ", next_step.selected)
+    println("accepted root Delta U extrema = ",
+            isempty(accepted_du) ? nothing : extrema(accepted_du))
+    println("accepted root LTE extrema = ",
+            isempty(accepted_lte) ? nothing : extrema(accepted_lte))
+    println("next LTE-controller Delta U = ", next_du)
+    println("next paper/local Delta U = ", next_step.selected)
 end
 
 main()

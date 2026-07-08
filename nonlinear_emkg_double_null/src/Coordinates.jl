@@ -53,6 +53,21 @@ function compact_mrt_grid(p::RNParams; nu::Int=80, nv::Int=80, u0=-1.2, v0=0.0, 
     return Grid(u, v)
 end
 
+function ef_v_mrt_grid(
+    p::RNParams;
+    nu::Int=80,
+    nv::Int=80,
+    u0=-1.2,
+    u1=-1.0e-3,
+    Vef0=0.0,
+    Vef1=100.0,
+)
+    u = collect(range(u0, u1; length=nu))
+    vef = range(Vef0, Vef1; length=nv)
+    v = [compact_v_from_ef_v(V, p) for V in vef]
+    return Grid(u, v)
+end
+
 struct Grid{T<:Real}
     u::Vector{T}
     v::Vector{T}

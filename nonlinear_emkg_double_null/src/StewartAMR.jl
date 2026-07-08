@@ -81,6 +81,49 @@ mutable struct StewartAMRStats
     max_level_reached::Int
 end
 
+struct StewartRootStepController{T<:Real}
+    target_lte::T
+    safety::T
+    min_factor::T
+    max_factor::T
+    min_du::T
+    max_du::T
+end
+
+function StewartRootStepController(;
+    target_lte=0.7,
+    safety=0.9,
+    min_factor=0.5,
+    max_factor=1.5,
+    min_du=0.0,
+    max_du=Inf,
+)
+    target_lte > 0 ||
+        throw(ArgumentError("target_lte must be positive"))
+    safety > 0 ||
+        throw(ArgumentError("safety must be positive"))
+    zero(min_factor) < min_factor <= max_factor ||
+        throw(ArgumentError("step factors must obey 0 < min_factor <= max_factor"))
+    min_du >= 0 || throw(ArgumentError("min_du must be nonnegative"))
+    max_du > min_du || throw(ArgumentError("max_du must exceed min_du"))
+    T = promote_type(
+        typeof(target_lte),
+        typeof(safety),
+        typeof(min_factor),
+        typeof(max_factor),
+        typeof(min_du),
+        typeof(max_du),
+    )
+    return StewartRootStepController{T}(
+        convert(T, target_lte),
+        convert(T, safety),
+        convert(T, min_factor),
+        convert(T, max_factor),
+        convert(T, min_du),
+        convert(T, max_du),
+    )
+end
+
 StewartAMRStats() =
     StewartAMRStats(
         Int[], Int[], Float64[], Float64[],
@@ -102,6 +145,34 @@ function copy_stewart_stats(stats::StewartAMRStats)
         stats.rejected_finest_lte_steps,
         stats.max_level_reached,
     )
+end
+
+function deepest_recent_lte(stats::StewartAMRStats)
+    for level in length(stats.last_lte):-1:1
+        value = stats.last_lte[level]
+        isfinite(value) && return value
+    end
+    return NaN
+end
+
+function next_stewart_root_du(
+    controller::StewartRootStepController,
+    accepted_du::Real,
+    normalized_lte::Real;
+    order::Int=2,
+)
+    accepted_du > 0 ||
+        throw(ArgumentError("accepted_du must be positive"))
+    order >= 1 || throw(ArgumentError("order must be positive"))
+    exponent = inv(order + 1)
+    factor = if !isfinite(normalized_lte) || normalized_lte <= 0
+        controller.max_factor
+    else
+        controller.safety * (controller.target_lte / normalized_lte)^exponent
+    end
+    factor = clamp(factor, controller.min_factor, controller.max_factor)
+    proposed = accepted_du * factor
+    return clamp(proposed, controller.min_du, controller.max_du)
 end
 
 struct StewartFinestLTEError{T<:Real} <: Exception

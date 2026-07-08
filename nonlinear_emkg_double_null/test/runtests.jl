@@ -808,6 +808,17 @@ end
     @test rejecting.stats.rejected_finest_lte_steps ==
           rejecting_result.backtracks
     @test rejecting.root.current.u == rejecting_result.accepted_target_u
+    controller = StewartRootStepController(
+        target_lte=0.7,
+        safety=0.9,
+        min_factor=0.5,
+        max_factor=1.5,
+    )
+    @test next_stewart_root_du(controller, 0.01, 0.7; order=2) ≈ 0.009
+    @test next_stewart_root_du(controller, 0.01, 1.0e-6; order=2) ≈ 0.015
+    @test next_stewart_root_du(controller, 0.01, 100.0; order=2) ≈ 0.005
+    rejecting.stats.last_lte = [NaN, 0.4, 0.2]
+    @test deepest_recent_lte(rejecting.stats) == 0.2
 
     vacuum = EvolutionParams(
         rn=RNParams(1.0, 1.0),
@@ -1052,6 +1063,13 @@ end
     @test crossing.u ≈ -0.5
     @test crossing.v ≈ 0.5
     @test crossing.rv ≈ 0.0
+    charge_sample = row_horizon_charge_density_sample(row; row_index=7)
+    @test charge_sample.row_index == 7
+    @test charge_sample.v ≈ 0.5
+    @test charge_sample.q ≈ 1.0
+    @test charge_sample.surface_density ≈ 1 / (4pi * 2.25^2)
+    @test charge_sample.flux_density_v ≈ 0.0
+    @test length(apparent_horizon_charge_density_series([row])) == 1
     diagnostic = vtrap_diagnostic([row]; missing_status=:max_rows)
     @test diagnostic.status == :trapped
     @test diagnostic.trapped

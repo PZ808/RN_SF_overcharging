@@ -504,6 +504,21 @@ struct VTrapDiagnostic{T<:Real}
     closest::TrappedSurfaceSample{T}
 end
 
+struct HorizonChargeDensitySample{T<:Real}
+    row_index::Int
+    u::T
+    v::T
+    r::T
+    q::T
+    rv::T
+    q_v::T
+    surface_density::T
+    flux_density_v::T
+    q_u::T
+    r_u::T
+    radial_density_proxy::T
+end
+
 """
 Gauge-invariant quasi-local quantities at a marginally trapped sphere.
 
@@ -568,6 +583,104 @@ function row_apparent_horizon_crossing(row::NLRow; row_index::Int=0)
         segment_value(row.Q, i - 1, fraction),
         zero(rv[i]),
     )
+end
+
+function row_horizon_charge_density_sample(row::NLRow; row_index::Int=0)
+    rv = row_outgoing_expansion(row)
+    crossing = findfirst(value -> value <= zero(value), rv)
+    isnothing(crossing) && return nothing
+    qv = coordinate_derivative(row.Q, row.v)
+
+    if crossing == firstindex(rv)
+        r = row.r[crossing]
+        q = row.Q[crossing]
+        return HorizonChargeDensitySample(
+            row_index,
+            row.u,
+            row.v[crossing],
+            r,
+            q,
+            rv[crossing],
+            qv[crossing],
+            q / (4pi * r^2),
+            qv[crossing] / (4pi * r^2),
+            oftype(r, NaN),
+            oftype(r, NaN),
+            oftype(r, NaN),
+        )
+    end
+
+    i = crossing
+    fraction = rv[i - 1] / (rv[i - 1] - rv[i])
+    r = segment_value(row.r, i - 1, fraction)
+    q = segment_value(row.Q, i - 1, fraction)
+    q_v = segment_value(qv, i - 1, fraction)
+    return HorizonChargeDensitySample(
+        row_index,
+        row.u,
+        segment_value(row.v, i - 1, fraction),
+        r,
+        q,
+        zero(rv[i]),
+        q_v,
+        q / (4pi * r^2),
+        q_v / (4pi * r^2),
+        oftype(r, NaN),
+        oftype(r, NaN),
+        oftype(r, NaN),
+    )
+end
+
+function with_radial_charge_density_proxy(
+    sample::HorizonChargeDensitySample,
+    rows::AbstractVector{<:NLRow},
+)
+    i = sample.row_index
+    if i <= firstindex(rows) && i < lastindex(rows)
+        lower, upper = rows[i], rows[i + 1]
+    elseif i >= lastindex(rows) && i > firstindex(rows)
+        lower, upper = rows[i - 1], rows[i]
+    elseif firstindex(rows) < i < lastindex(rows)
+        lower, upper = rows[i - 1], rows[i + 1]
+    else
+        return sample
+    end
+    first(lower.v) <= sample.v <= last(lower.v) &&
+        first(upper.v) <= sample.v <= last(upper.v) || return sample
+    lower_point = row_point_at_v(lower, sample.v)
+    upper_point = row_point_at_v(upper, sample.v)
+    du = upper.u - lower.u
+    du > 0 || return sample
+    q_u = (upper_point.Q - lower_point.Q) / du
+    r_u = (upper_point.r - lower_point.r) / du
+    radial_q = r_u != 0 ? q_u / r_u : oftype(sample.r, NaN)
+    proxy = isfinite(radial_q) ?
+            (radial_q + sample.q_v / 2) / (4pi * sample.r^2) :
+            oftype(sample.r, NaN)
+    return HorizonChargeDensitySample(
+        sample.row_index,
+        sample.u,
+        sample.v,
+        sample.r,
+        sample.q,
+        sample.rv,
+        sample.q_v,
+        sample.surface_density,
+        sample.flux_density_v,
+        q_u,
+        r_u,
+        proxy,
+    )
+end
+
+function apparent_horizon_charge_density_series(rows::AbstractVector{<:NLRow})
+    samples = HorizonChargeDensitySample[]
+    for (row_index, row) in pairs(rows)
+        sample = row_horizon_charge_density_sample(row; row_index)
+        isnothing(sample) ||
+            push!(samples, with_radial_charge_density_proxy(sample, rows))
+    end
+    return samples
 end
 
 function quadratic_sample_value(left, center, right, x)
@@ -1256,10 +1369,22 @@ function horizon_charge_density_series(st::State, g::Grid, ep::EvolutionParams; 
     for j in eachindex(g.v)
         if i == firstindex(g.u)
             q_u_compact = (st.Q[i + 1, j] - st.Q[i, j]) / (g.u[i + 1] - g.u[i])
+            r_u_compact = (
+                areal_radius(g.u[i + 1], g.v[j], p) -
+                areal_radius(g.u[i], g.v[j], p)
+            ) / (g.u[i + 1] - g.u[i])
         elseif i == lastindex(g.u)
             q_u_compact = (st.Q[i, j] - st.Q[i - 1, j]) / (g.u[i] - g.u[i - 1])
+            r_u_compact = (
+                areal_radius(g.u[i], g.v[j], p) -
+                areal_radius(g.u[i - 1], g.v[j], p)
+            ) / (g.u[i] - g.u[i - 1])
         else
             q_u_compact = (st.Q[i + 1, j] - st.Q[i - 1, j]) / (g.u[i + 1] - g.u[i - 1])
+            r_u_compact = (
+                areal_radius(g.u[i + 1], g.v[j], p) -
+                areal_radius(g.u[i - 1], g.v[j], p)
+            ) / (g.u[i + 1] - g.u[i - 1])
         end
 
         if j == firstindex(g.v)
@@ -1270,14 +1395,7 @@ function horizon_charge_density_series(st::State, g::Grid, ep::EvolutionParams; 
             q_vef = (st.Q[i, j + 1] - st.Q[i, j - 1]) / (vef[j + 1] - vef[j - 1])
         end
 
-        U = tan(g.u[i])
-        du_dU = cos(g.u[i])^2
-        if abs(p.Q0) ≈ p.M
-            q_r = 0.5 * du_dU * q_u_compact
-        else
-            kappa = (horizons(p)[1] - horizons(p)[2]) / (2 * rplus^2)
-            q_r = 0.5 * exp(-kappa * vef[j]) * du_dU * q_u_compact
-        end
+        q_r = q_u_compact / r_u_compact
         rho[j] = (q_r + 0.5 * q_vef) / (4pi * rplus^2)
     end
 

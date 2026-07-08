@@ -33,11 +33,14 @@ function step_cell!(st::State, g::Grid, ep::EvolutionParams, i::Int, j::Int)
 
     xi11 = xi10 + xi01 - xi00
     pi11 = pi10 + pi01 - pi00
-    au11 = au10 + au01 - au00
-    av11 = av10 + av01 - av00
+    au11 = au10 + (g.v[j + 1] - g.v[j]) * q00 * metric_f(uc, vc, ep.rn) / (2r^2)
+    av11 = av01 - (g.u[i + 1] - g.u[i]) * q00 * metric_f(uc, vc, ep.rn) / (2r^2)
     q11 = q10 + q01 - q00
 
-    for _ in 1:4
+    workspace = NewtonCellWorkspace(promote_type(eltype(g.u), eltype(st.xi)), 5)
+    workspace.values .= (xi11, pi11, au11, av11, q11)
+    residual_function! = function (residual, values)
+        xi11, pi11, au11, av11, q11 = values
         xic = (xi00 + xi10 + xi01 + xi11) / 4
         pic = (pi00 + pi10 + pi01 + pi11) / 4
         auc = (au00 + au10 + au01 + au11) / 4
@@ -52,18 +55,30 @@ function step_cell!(st::State, g::Grid, ep::EvolutionParams, i::Int, j::Int)
         xiuv = gg * xic + e^2 * xic * auc * avc - e * (avc * piu + auc * piv)
         piuv = gg * pic + e^2 * pic * auc * avc + e * (avc * xiu + auc * xiv)
 
-        auv = qc * f / (2r^2)
-        avu = -qc * f / (2r^2)
+        faraday = qc * f / (2r^2)
         quv = 8pi * e * (-e * f * qc * (xic^2 + pic^2) / (2r^2) -
                           e * auc * (xic * xiv + pic * piv) +
                           e * avc * (xic * xiu + pic * piu) -
                           xiu * piv + xiv * piu)
 
-        xi11 = xi10 + xi01 - xi00 + du * dv * xiuv
-        pi11 = pi10 + pi01 - pi00 + du * dv * piuv
-        au11 = au10 + au01 - au00 + du * dv * auv
-        av11 = av10 + av01 - av00 + du * dv * avu
-        q11 = q10 + q01 - q00 + du * dv * quv
+        residual[1] = xi11 - xi10 - xi01 + xi00 - du * dv * xiuv
+        residual[2] = pi11 - pi10 - pi01 + pi00 - du * dv * piuv
+        residual[3] = au11 - au10 - dv * faraday
+        residual[4] = av11 - av01 + du * faraday
+        residual[5] = q11 - q10 - q01 + q00 - du * dv * quv
+        return residual
+    end
+    solved = damped_newton_cell!(
+        residual_function!,
+        workspace;
+        max_iterations=12,
+        rtol=1.0e-12,
+        atol=1.0e-14,
+    )
+    if solved.converged
+        xi11, pi11, au11, av11, q11 = workspace.values
+    else
+        xi11, pi11, au11, av11, q11 = workspace.values
     end
 
     st.xi[i + 1, j + 1] = xi11
@@ -73,4 +88,3 @@ function step_cell!(st::State, g::Grid, ep::EvolutionParams, i::Int, j::Int)
     st.Q[i + 1, j + 1] = q11
     return st
 end
-
