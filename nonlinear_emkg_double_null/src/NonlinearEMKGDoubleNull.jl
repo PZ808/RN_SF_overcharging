@@ -12,7 +12,9 @@ include("Evolution.jl")
 include("Diagnostics.jl")
 
 export RNParams, EvolutionParams, Grid, State
-export compact_mrt_grid, ef_v_mrt_grid, initialize_state, evolve!, maxwell_residuals
+export compact_mrt_grid, ef_v_mrt_grid, ef_uv_mrt_grid, initialize_state
+export initialize_gp2025_bump_state, gp2025_bump_envelope
+export evolve!, maxwell_residuals
 export MetricState, einstein_backreaction_rhs!
 export NLState, initialize_nonlinear_state, evolve_nonlinear!, mrt2013_background_f
 export mrt2013_grid, mrt2013_areal_radius, mrt2013_metric_f, initialize_mrt2013_uncharged_ingoing!
@@ -74,7 +76,10 @@ export gp2026_rphi_profile, gp2026_horizon_rphi_series
 export ThroatBoundaryObservables, throat_boundary_observables
 export cell_equation_residual_summary
 export gp2026_initial_constraint_residuals
-export horizon_charge_density_series, conformal_weight_s
-export rstar, areal_radius, metric_F, metric_f, metric_ftilde, radius_from_rstar, compact_v_from_ef_v
+export horizon_charge_density_series, horizon_energy_density_series
+export horizon_energy_density_divided_series, horizon_energy_density_direct_series
+export horizon_energy_density_divided_components
+export conformal_weight_s
+export rstar, areal_radius, metric_F, metric_f, metric_ftilde, radius_from_rstar, compact_v_from_ef_v, compact_u_from_ef_u
 
 end

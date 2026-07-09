@@ -1360,6 +1360,39 @@ function conformal_weight_s(eQ0)
     return real(0.5 + sqrt(complex(0.25 - eQ0^2)))
 end
 
+function rn_surface_gravity(p::RNParams)
+    rplus, rminus = horizons(p)
+    return (rplus - rminus) / (2rplus^2)
+end
+
+function horizon_radial_jacobian(u::Real, vef::Real, p::RNParams)
+    kappa = rn_surface_gravity(p)
+    return 0.5 * exp(-kappa * vef) * cos(u)^2
+end
+
+function compact_u_derivative(a::AbstractMatrix, g::Grid, i::Int, j::Int)
+    if i == firstindex(g.u)
+        return (a[i + 1, j] - a[i, j]) / (g.u[i + 1] - g.u[i])
+    elseif i == lastindex(g.u)
+        return (a[i, j] - a[i - 1, j]) / (g.u[i] - g.u[i - 1])
+    end
+    return (a[i + 1, j] - a[i - 1, j]) / (g.u[i + 1] - g.u[i - 1])
+end
+
+function ef_v_derivative(a::AbstractMatrix, vef::AbstractVector, i::Int, j::Int)
+    if j == firstindex(vef)
+        return (a[i, j + 1] - a[i, j]) / (vef[j + 1] - vef[j])
+    elseif j == lastindex(vef)
+        return (a[i, j] - a[i, j - 1]) / (vef[j] - vef[j - 1])
+    end
+    return (a[i, j + 1] - a[i, j - 1]) / (vef[j + 1] - vef[j - 1])
+end
+
+function ef_v_jacobian(v::Real, p::RNParams)
+    rarg = mrt_arg_v(v, p)
+    return sec(v)^2 / metric_F(rarg, p)
+end
+
 function horizon_charge_density_series(st::State, g::Grid, ep::EvolutionParams; i::Int=lastindex(g.u))
     p = ep.rn
     rplus, _ = horizons(p)
@@ -1367,36 +1400,97 @@ function horizon_charge_density_series(st::State, g::Grid, ep::EvolutionParams; 
     rho = similar(vef)
 
     for j in eachindex(g.v)
-        if i == firstindex(g.u)
-            q_u_compact = (st.Q[i + 1, j] - st.Q[i, j]) / (g.u[i + 1] - g.u[i])
-            r_u_compact = (
-                areal_radius(g.u[i + 1], g.v[j], p) -
-                areal_radius(g.u[i], g.v[j], p)
-            ) / (g.u[i + 1] - g.u[i])
-        elseif i == lastindex(g.u)
-            q_u_compact = (st.Q[i, j] - st.Q[i - 1, j]) / (g.u[i] - g.u[i - 1])
-            r_u_compact = (
-                areal_radius(g.u[i], g.v[j], p) -
-                areal_radius(g.u[i - 1], g.v[j], p)
-            ) / (g.u[i] - g.u[i - 1])
-        else
-            q_u_compact = (st.Q[i + 1, j] - st.Q[i - 1, j]) / (g.u[i + 1] - g.u[i - 1])
-            r_u_compact = (
-                areal_radius(g.u[i + 1], g.v[j], p) -
-                areal_radius(g.u[i - 1], g.v[j], p)
-            ) / (g.u[i + 1] - g.u[i - 1])
-        end
-
-        if j == firstindex(g.v)
-            q_vef = (st.Q[i, j + 1] - st.Q[i, j]) / (vef[j + 1] - vef[j])
-        elseif j == lastindex(g.v)
-            q_vef = (st.Q[i, j] - st.Q[i, j - 1]) / (vef[j] - vef[j - 1])
-        else
-            q_vef = (st.Q[i, j + 1] - st.Q[i, j - 1]) / (vef[j + 1] - vef[j - 1])
-        end
-
-        q_r = q_u_compact / r_u_compact
+        q_u_compact = compact_u_derivative(st.Q, g, i, j)
+        q_vef = ef_v_derivative(st.Q, vef, i, j)
+        q_r = horizon_radial_jacobian(g.u[i], vef[j], p) * q_u_compact
         rho[j] = (q_r + 0.5 * q_vef) / (4pi * rplus^2)
+    end
+
+    return vef, rho
+end
+
+function horizon_energy_density_series(st::State, g::Grid, ep::EvolutionParams; i::Int=lastindex(g.u))
+    vef, q_radial, p_radial, q_vef_term, p_vef_term =
+        horizon_energy_density_divided_components(st, g, ep; i)
+    return vef, q_radial .+ p_radial .+ q_vef_term .+ p_vef_term
+end
+
+horizon_energy_density_divided_series(st::State, g::Grid, ep::EvolutionParams; i::Int=lastindex(g.u)) =
+    horizon_energy_density_series(st, g, ep; i)
+
+function horizon_energy_density_divided_components(st::State, g::Grid, ep::EvolutionParams; i::Int=lastindex(g.u))
+    p = ep.rn
+    e = ep.scalar_charge
+    rplus, _ = horizons(p)
+    vef = [ef_v_from_mrt(v, p) for v in g.v]
+    q_radial = similar(vef)
+    p_radial = similar(vef)
+    q_vef_term = similar(vef)
+    p_vef_term = similar(vef)
+    P = sqrt.(st.xi .^ 2 .+ st.pi .^ 2)
+
+    for j in eachindex(g.v)
+        q_u_compact = compact_u_derivative(st.Q, g, i, j)
+        p_u_compact = compact_u_derivative(P, g, i, j)
+        q_vef = ef_v_derivative(st.Q, vef, i, j)
+        p_vef = ef_v_derivative(P, vef, i, j)
+        jac = horizon_radial_jacobian(g.u[i], vef[j], p)
+        q_r = jac * q_u_compact
+        p_r = jac * p_u_compact
+        p_abs = P[i, j]
+
+        if e == 0 || p_abs == 0
+            q_radial[j] = NaN
+            p_radial[j] = NaN
+            q_vef_term[j] = NaN
+            p_vef_term[j] = NaN
+            continue
+        end
+
+        p_over_r_r = p_r / rplus - p_abs / rplus^2
+        q_radial[j] = 2 / rplus^2 * (q_r / (8pi * e * p_abs))^2
+        p_radial[j] = 2 * p_over_r_r^2
+        q_vef_term[j] = 1 / (2rplus^2) * (q_vef / (8pi * e * p_abs))^2
+        p_vef_term[j] = 1 / (2rplus^2) * p_vef^2
+    end
+
+    return vef, q_radial, p_radial, q_vef_term, p_vef_term
+end
+
+function horizon_energy_density_direct_series(st::State, g::Grid, ep::EvolutionParams; i::Int=lastindex(g.u))
+    p = ep.rn
+    e = ep.scalar_charge
+    rplus, _ = horizons(p)
+    vef = [ef_v_from_mrt(v, p) for v in g.v]
+    rho = similar(vef)
+
+    for j in eachindex(g.v)
+        jac_r = horizon_radial_jacobian(g.u[i], vef[j], p)
+        jac_v = ef_v_jacobian(g.v[j], p)
+
+        xi = st.xi[i, j]
+        pii = st.pi[i, j]
+        xi_r = jac_r * compact_u_derivative(st.xi, g, i, j)
+        pi_r = jac_r * compact_u_derivative(st.pi, g, i, j)
+        xi_vef = ef_v_derivative(st.xi, vef, i, j)
+        pi_vef = ef_v_derivative(st.pi, vef, i, j)
+
+        phi_re = xi / rplus
+        phi_im = pii / rplus
+        phi_re_r = xi_r / rplus - xi / rplus^2
+        phi_im_r = pi_r / rplus - pii / rplus^2
+        phi_re_vef = xi_vef / rplus
+        phi_im_vef = pi_vef / rplus
+
+        a_r = jac_r * st.Au[i, j]
+        a_vef = st.Av[i, j] / jac_v
+
+        dr_re = phi_re_r + e * a_r * phi_im
+        dr_im = phi_im_r - e * a_r * phi_re
+        dv_re = phi_re_vef + e * a_vef * phi_im
+        dv_im = phi_im_vef - e * a_vef * phi_re
+
+        rho[j] = 2 * (dr_re^2 + dr_im^2) + 0.5 * (dv_re^2 + dv_im^2)
     end
 
     return vef, rho

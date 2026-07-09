@@ -33,6 +33,10 @@ fit_vmin_floor = real_argument(8, 40.0)
 u1 = real_argument(9, -1.0e-4)
 fit_xmax_quantile = real_argument(10, 0.95)
 grid_mode = string_argument(11, "compact")
+fit_vmax_override = length(ARGS) >= 12 ? real_argument(12, NaN) : NaN
+uef1 = length(ARGS) >= 13 ? real_argument(13, 1000.0) : 1000.0
+envelope_mode = length(ARGS) >= 14 ? string_argument(14, "gaussian") : "gaussian"
+pulse_width = length(ARGS) >= 15 ? real_argument(15, 4.0) : 4.0
 
 ep = EvolutionParams(
     rn = RNParams(1.0, q0),
@@ -40,7 +44,7 @@ ep = EvolutionParams(
     amplitude = amplitude,
     omega = 0.0,
     center = 20.0,
-    width = 4.0,
+    width = pulse_width,
 )
 
 grid = if grid_mode == "compact"
@@ -49,50 +53,102 @@ grid = if grid_mode == "compact"
     compact_mrt_grid(ep.rn; nu, nv, u0=-1.0, v0=v0, u1, v1)
 elseif grid_mode == "ef-uniform"
     ef_v_mrt_grid(ep.rn; nu, nv, u0=-1.0, u1, Vef0=0.0, Vef1=vmax)
+elseif grid_mode == "ef-uv"
+    ef_uv_mrt_grid(ep.rn; nu, nv, Uef0=0.0, Uef1=uef1, Vef0=0.0, Vef1=vmax)
 else
-    throw(ArgumentError("grid_mode must be compact or ef-uniform"))
+    throw(ArgumentError("grid_mode must be compact, ef-uniform, or ef-uv"))
 end
-state = initialize_state(grid, ep)
+state = if envelope_mode == "gaussian"
+    initialize_state(grid, ep)
+elseif envelope_mode == "gp-bump"
+    initialize_gp2025_bump_state(grid, ep)
+else
+    throw(ArgumentError("envelope_mode must be gaussian or gp-bump"))
+end
 evolve!(state, grid, ep)
 ru, rv = maxwell_residuals(state, grid, ep)
 
 vef, rho = horizon_charge_density_series(state, grid, ep)
-finite = isfinite.(vef) .& isfinite.(rho) .& (vef .> 0) .& (abs.(rho) .> 0)
-vef = vef[finite]
-rho = rho[finite]
-rho_abs = abs.(rho)
+vef_energy, rho_energy = horizon_energy_density_series(state, grid, ep)
+vef_energy_direct, rho_energy_direct =
+    horizon_energy_density_direct_series(state, grid, ep)
+vef_components, e_qr, e_pr, e_qv, e_pv =
+    horizon_energy_density_divided_components(state, grid, ep)
+finite_charge = isfinite.(vef) .& isfinite.(rho) .& (vef .> 0) .& (abs.(rho) .> 0)
+finite_energy = isfinite.(vef_energy) .& isfinite.(rho_energy) .&
+                (vef_energy .> 0) .& (rho_energy .> 0)
+finite_energy_direct = isfinite.(vef_energy_direct) .& isfinite.(rho_energy_direct) .&
+                       (vef_energy_direct .> 0) .& (rho_energy_direct .> 0)
+vef_charge = vef[finite_charge]
+rho_charge = rho[finite_charge]
+rho_abs = abs.(rho_charge)
+vef_energy = vef_energy[finite_energy]
+rho_energy = rho_energy[finite_energy]
+vef_energy_direct = vef_energy_direct[finite_energy_direct]
+rho_energy_direct = rho_energy_direct[finite_energy_direct]
 
-vmin = max(fit_vmin_floor, quantile_like(vef, fit_quantile))
-vmax_fit = quantile_like(vef, fit_xmax_quantile)
-slope, intercept, nfit = fit_power_law(vef, rho_abs; xmin=vmin, xmax=vmax_fit)
+vmin = max(fit_vmin_floor, quantile_like(vef_charge, fit_quantile))
+vmax_fit = isfinite(fit_vmax_override) ? fit_vmax_override :
+           quantile_like(vef_charge, fit_xmax_quantile)
+slope, intercept, nfit = fit_power_law(vef_charge, rho_abs; xmin=vmin, xmax=vmax_fit)
 s = conformal_weight_s(ep.scalar_charge * ep.rn.Q0)
 target = 1 - 2s
-late_mask = (vef .>= vmin) .& (vef .<= vmax_fit)
+energy_target = isapprox(abs(ep.rn.Q0), ep.rn.M) ? 2 - 2s : -4s
+energy_slope, energy_intercept, energy_nfit =
+    fit_power_law(vef_energy, rho_energy; xmin=vmin, xmax=vmax_fit)
+energy_direct_slope, energy_direct_intercept, energy_direct_nfit =
+    fit_power_law(vef_energy_direct, rho_energy_direct; xmin=vmin, xmax=vmax_fit)
+late_mask = (vef_charge .>= vmin) .& (vef_charge .<= vmax_fit)
 late = rho_abs[late_mask]
 plateau_ratio = maximum(late) / minimum(late)
-late_signed = rho[late_mask]
+late_signed = rho_charge[late_mask]
 dominant_sign = count(>=(0), late_signed) >= count(<(0), late_signed) ? 1.0 : -1.0
-sign_mask = late_mask .& (dominant_sign .* rho .> 0)
+sign_mask = late_mask .& (dominant_sign .* rho_charge .> 0)
 signed_slope = count(sign_mask) >= 2 ?
-               fit_power_law(vef[sign_mask], dominant_sign .* rho[sign_mask])[1] :
+               fit_power_law(vef_charge[sign_mask], dominant_sign .* rho_charge[sign_mask])[1] :
                NaN
-signed_late = dominant_sign .* rho[sign_mask]
+signed_late = dominant_sign .* rho_charge[sign_mask]
 signed_ratio = isempty(signed_late) ? NaN : maximum(signed_late) / minimum(signed_late)
 
 println("# q0 = ", q0, ", eQ0 = ", eQ0, ", amplitude = ", amplitude,
         ", Vmax = ", vmax, ", nu = ", nu, ", nv = ", nv,
         ", fit_quantile = ", fit_quantile, ", fit_vmin_floor = ",
         fit_vmin_floor, ", u1 = ", u1, ", fit_xmax_quantile = ",
-        fit_xmax_quantile, ", grid_mode = ", grid_mode)
-println("samples = ", length(vef))
-println("fit samples = ", nfit)
+        fit_xmax_quantile, ", grid_mode = ", grid_mode,
+        ", fit_vmax_override = ", fit_vmax_override, ", Uef1 = ", uef1,
+        ", envelope_mode = ", envelope_mode, ", pulse_width = ", pulse_width)
+println("charge samples = ", length(vef_charge))
+println("charge fit samples = ", nfit)
+println("energy samples = ", length(vef_energy))
+println("energy fit samples = ", energy_nfit)
+println("direct-energy samples = ", length(vef_energy_direct))
+println("direct-energy fit samples = ", energy_direct_nfit)
 println("fit window V_EF = ", (vmin, vmax_fit))
 println("eQ0 = ", ep.scalar_charge * ep.rn.Q0)
 println("s = ", s)
 println("late-time |rho_Q| slope = ", slope)
 println("late-time sign-coherent rho_Q slope = ", signed_slope)
 println("linear target slope 1 - 2s = ", target)
+println("late-time rho_E slope = ", energy_slope)
+println("late-time rho_E direct-check slope = ", energy_direct_slope)
+println("linear target energy slope = ", energy_target)
 println("late-window plateau max/min = ", plateau_ratio)
 println("sign-coherent late-window max/min = ", signed_ratio)
 println("max |Maxwell-U residual| = ", maximum(abs, ru))
 println("max |Maxwell-V residual| = ", maximum(abs, rv))
+println("late samples:")
+for target_v in (80.0, 120.0, 150.0, 200.0, 300.0, 400.0, 600.0, 900.0, 1200.0)
+    target_v <= maximum(vef_charge) || continue
+    _, jq = findmin(abs.(vef_charge .- target_v))
+    _, je = findmin(abs.(vef_energy .- target_v))
+    _, jd = findmin(abs.(vef_energy_direct .- target_v))
+    _, jc = findmin(abs.(vef_components .- target_v))
+    println("  V=", vef_charge[jq],
+            " rho_Q=", rho_charge[jq],
+            " rho_E=", rho_energy[je],
+            " rho_E_direct_check=", rho_energy_direct[jd],
+            " components=(Qr=", e_qr[jc],
+            ", Pr=", e_pr[jc],
+            ", Qv=", e_qv[jc],
+            ", Pv=", e_pv[jc], ")")
+end

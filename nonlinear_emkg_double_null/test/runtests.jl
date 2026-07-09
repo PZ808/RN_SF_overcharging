@@ -1190,6 +1190,35 @@ end
     @test isnothing(apparent_horizon_location([-1.0, 0.0], [0.5, 0.25]))
 end
 
+@testset "fixed-background horizon energy diagnostics" begin
+    ep = EvolutionParams(
+        rn=RNParams(1.0, 1.0),
+        scalar_charge=0.6,
+        amplitude=1.0e-5,
+        omega=0.0,
+        center=20.0,
+        width=4.0,
+    )
+    v0 = compact_v_from_ef_v(0.0, ep.rn)
+    v1 = compact_v_from_ef_v(80.0, ep.rn)
+    grid = compact_mrt_grid(ep.rn; nu=18, nv=24, u0=-1.0, u1=-1.0e-4, v0, v1)
+    state = initialize_state(grid, ep)
+    evolve!(state, grid, ep)
+
+    v_energy, rho_energy = horizon_energy_density_series(state, grid, ep)
+    v_components, q_radial, p_radial, q_vef, p_vef =
+        horizon_energy_density_divided_components(state, grid, ep)
+    v_direct, rho_direct = horizon_energy_density_direct_series(state, grid, ep)
+
+    @test v_energy == v_components == v_direct
+    finite = isfinite.(rho_energy)
+    @test count(finite) >= length(rho_energy) - 1
+    @test all(isfinite, rho_direct)
+    @test rho_energy[finite] ≈ (q_radial .+ p_radial .+ q_vef .+ p_vef)[finite]
+    @test all(>=(0), rho_energy[finite])
+    @test all(>=(0), rho_direct)
+end
+
 @testset "adaptive MRT one-step advance" begin
     ep = EvolutionParams(rn=RNParams(1.0, 1.0), scalar_charge=0.0, amplitude=0.0)
     u = collect(range(-5.1, -1.0e-3; length=8))

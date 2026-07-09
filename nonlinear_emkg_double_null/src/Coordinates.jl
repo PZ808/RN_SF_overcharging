@@ -47,6 +47,12 @@ function compact_v_from_ef_v(Vef::Real, p::RNParams)
     return atan(2 * (rarg - rplus))
 end
 
+function compact_u_from_ef_u(Uef::Real, p::RNParams)
+    rplus, _ = horizons(p)
+    rarg = radius_from_rstar(-Uef / 2, p)
+    return atan(2 * (rplus - rarg))
+end
+
 function compact_mrt_grid(p::RNParams; nu::Int=80, nv::Int=80, u0=-1.2, v0=0.0, u1=-1.0e-3, v1=pi / 2 - 1.0e-3)
     u = collect(range(u0, u1; length=nu))
     v = collect(range(v0, v1; length=nv))
@@ -64,6 +70,22 @@ function ef_v_mrt_grid(
 )
     u = collect(range(u0, u1; length=nu))
     vef = range(Vef0, Vef1; length=nv)
+    v = [compact_v_from_ef_v(V, p) for V in vef]
+    return Grid(u, v)
+end
+
+function ef_uv_mrt_grid(
+    p::RNParams;
+    nu::Int=80,
+    nv::Int=80,
+    Uef0=0.0,
+    Uef1=1000.0,
+    Vef0=0.0,
+    Vef1=100.0,
+)
+    uef = range(Uef0, Uef1; length=nu)
+    vef = range(Vef0, Vef1; length=nv)
+    u = [compact_u_from_ef_u(U, p) for U in uef]
     v = [compact_v_from_ef_v(V, p) for V in vef]
     return Grid(u, v)
 end

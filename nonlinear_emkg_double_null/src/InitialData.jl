@@ -2,11 +2,19 @@ function gaussian_envelope(Vef::Real, ep::EvolutionParams)
     return ep.amplitude * exp(-((Vef - ep.center) / ep.width)^2)
 end
 
+function gp2025_bump_envelope(Vef::Real, ep::EvolutionParams)
+    width = ep.width
+    if Vef <= 0 || Vef >= width
+        return zero(promote_type(typeof(Vef), typeof(ep.amplitude)))
+    end
+    return ep.amplitude * exp(width / 4 * (1 / (Vef - width) - 1 / Vef) + 1)
+end
+
 function ef_v_from_mrt(v::Real, p::RNParams)
     return 2 * rstar(mrt_arg_v(v, p), p)
 end
 
-function initialize_state(g::Grid, ep::EvolutionParams)
+function initialize_state(g::Grid, ep::EvolutionParams; envelope=gaussian_envelope)
     st = State(g)
     p = ep.rn
     st.Q[:, :] .= p.Q0
@@ -25,7 +33,7 @@ function initialize_state(g::Grid, ep::EvolutionParams)
             phase += ep.scalar_charge * p.Q0 * dVef / (2rprev)
             prev_vef = Vef
         end
-        amp = gaussian_envelope(Vef, ep)
+        amp = envelope(Vef, ep)
         theta = phase - ep.omega * Vef
         st.xi[1, j] = amp * cos(theta)
         st.pi[1, j] = amp * sin(theta)
@@ -57,3 +65,6 @@ function initialize_state(g::Grid, ep::EvolutionParams)
 
     return st
 end
+
+initialize_gp2025_bump_state(g::Grid, ep::EvolutionParams) =
+    initialize_state(g, ep; envelope=gp2025_bump_envelope)
