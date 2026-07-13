@@ -10,10 +10,11 @@ include("StewartAMR.jl")
 include("InitialData.jl")
 include("Evolution.jl")
 include("Diagnostics.jl")
+include("FixedBackgroundAdaptive.jl")
 
 export RNParams, EvolutionParams, Grid, State
 export compact_mrt_grid, ef_v_mrt_grid, ef_uv_mrt_grid, initialize_state
-export initialize_gp2025_bump_state, gp2025_bump_envelope
+export initialize_gp2025_bump_state, gaussian_envelope, gp2025_bump_envelope
 export evolve!, maxwell_residuals
 export MetricState, einstein_backreaction_rhs!
 export NLState, initialize_nonlinear_state, evolve_nonlinear!, mrt2013_background_f
@@ -79,7 +80,13 @@ export gp2026_initial_constraint_residuals
 export horizon_charge_density_series, horizon_energy_density_series
 export horizon_energy_density_divided_series, horizon_energy_density_direct_series
 export horizon_energy_density_divided_components
+export horizon_charge_density_extrapolated_series
+export horizon_energy_density_extrapolated_series
+export horizon_energy_density_extrapolated_components
 export conformal_weight_s
+export FixedBackgroundVRefinementConfig, FixedBackgroundVRefinementSummary
+export fixed_background_v_refinement_indicators, fixed_background_v_refinement_flags
+export refine_fixed_background_v_grid, evolve_fixed_background_v_adaptive
 export rstar, areal_radius, metric_F, metric_f, metric_ftilde, radius_from_rstar, compact_v_from_ef_v, compact_u_from_ef_u
 
 end

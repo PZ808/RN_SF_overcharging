@@ -1393,6 +1393,45 @@ function ef_v_jacobian(v::Real, p::RNParams)
     return sec(v)^2 / metric_F(rarg, p)
 end
 
+function polynomial_value_derivative_at(x::AbstractVector, y::AbstractVector, x0)
+    length(x) == length(y) || throw(ArgumentError("x and y must have the same length"))
+    n = length(x)
+    n >= 2 || throw(ArgumentError("at least two samples are required"))
+    T = promote_type(eltype(x), eltype(y), typeof(x0))
+    vandermonde = Matrix{T}(undef, n, n)
+    for row in 1:n
+        z = convert(T, x[row] - x0)
+        power = one(T)
+        for col in 1:n
+            vandermonde[row, col] = power
+            power *= z
+        end
+    end
+    coeffs = vandermonde \ T.(y)
+    return coeffs[1], coeffs[2]
+end
+
+function horizon_extrapolated_value_derivative(a::AbstractMatrix, g::Grid, j::Int;
+                                               rows::Int=4, u_horizon=0.0)
+    rows >= 2 || throw(ArgumentError("rows must be at least 2"))
+    rows <= length(g.u) || throw(ArgumentError("rows cannot exceed the number of U points"))
+    indices = (lastindex(g.u) - rows + 1):lastindex(g.u)
+    x = g.u[indices]
+    y = a[indices, j]
+    return polynomial_value_derivative_at(x, y, u_horizon)
+end
+
+function horizon_extrapolated_series(a::AbstractMatrix, g::Grid; rows::Int=4,
+                                     u_horizon=0.0)
+    values = similar(g.v)
+    u_derivatives = similar(g.v)
+    for j in eachindex(g.v)
+        values[j], u_derivatives[j] =
+            horizon_extrapolated_value_derivative(a, g, j; rows, u_horizon)
+    end
+    return values, u_derivatives
+end
+
 function horizon_charge_density_series(st::State, g::Grid, ep::EvolutionParams; i::Int=lastindex(g.u))
     p = ep.rn
     rplus, _ = horizons(p)
@@ -1404,6 +1443,24 @@ function horizon_charge_density_series(st::State, g::Grid, ep::EvolutionParams; 
         q_vef = ef_v_derivative(st.Q, vef, i, j)
         q_r = horizon_radial_jacobian(g.u[i], vef[j], p) * q_u_compact
         rho[j] = (q_r + 0.5 * q_vef) / (4pi * rplus^2)
+    end
+
+    return vef, rho
+end
+
+function horizon_charge_density_extrapolated_series(st::State, g::Grid, ep::EvolutionParams;
+                                                    rows::Int=4)
+    p = ep.rn
+    rplus, _ = horizons(p)
+    vef = [ef_v_from_mrt(v, p) for v in g.v]
+    q_h, q_u_h = horizon_extrapolated_series(st.Q, g; rows)
+    q_vef_h = similar(vef)
+    rho = similar(vef)
+
+    for j in eachindex(g.v)
+        q_vef_h[j] = ef_v_derivative(reshape(q_h, 1, :), vef, 1, j)
+        q_r_h = horizon_radial_jacobian(0.0, vef[j], p) * q_u_h[j]
+        rho[j] = (q_r_h + 0.5 * q_vef_h[j]) / (4pi * rplus^2)
     end
 
     return vef, rho
@@ -1494,4 +1551,57 @@ function horizon_energy_density_direct_series(st::State, g::Grid, ep::EvolutionP
     end
 
     return vef, rho
+end
+
+function horizon_energy_density_extrapolated_components(st::State, g::Grid,
+                                                        ep::EvolutionParams;
+                                                        rows::Int=4)
+    p = ep.rn
+    e = ep.scalar_charge
+    rplus, _ = horizons(p)
+    vef = [ef_v_from_mrt(v, p) for v in g.v]
+    q_radial = similar(vef)
+    p_radial = similar(vef)
+    q_vef_term = similar(vef)
+    p_vef_term = similar(vef)
+    P = sqrt.(st.xi .^ 2 .+ st.pi .^ 2)
+    p_h, p_u_h = horizon_extrapolated_series(P, g; rows)
+    q_h, q_u_h = horizon_extrapolated_series(st.Q, g; rows)
+    p_vef_h = similar(vef)
+    q_vef_h = similar(vef)
+    p_row = reshape(p_h, 1, :)
+    q_row = reshape(q_h, 1, :)
+
+    for j in eachindex(g.v)
+        p_vef_h[j] = ef_v_derivative(p_row, vef, 1, j)
+        q_vef_h[j] = ef_v_derivative(q_row, vef, 1, j)
+        jac = horizon_radial_jacobian(0.0, vef[j], p)
+        q_r = jac * q_u_h[j]
+        p_r = jac * p_u_h[j]
+        p_abs = p_h[j]
+
+        if e == 0 || p_abs == 0
+            q_radial[j] = NaN
+            p_radial[j] = NaN
+            q_vef_term[j] = NaN
+            p_vef_term[j] = NaN
+            continue
+        end
+
+        p_over_r_r = p_r / rplus - p_abs / rplus^2
+        q_radial[j] = 2 / rplus^2 * (q_r / (8pi * e * p_abs))^2
+        p_radial[j] = 2 * p_over_r_r^2
+        q_vef_term[j] = 1 / (2rplus^2) * (q_vef_h[j] / (8pi * e * p_abs))^2
+        p_vef_term[j] = 1 / (2rplus^2) * p_vef_h[j]^2
+    end
+
+    return vef, q_radial, p_radial, q_vef_term, p_vef_term
+end
+
+function horizon_energy_density_extrapolated_series(st::State, g::Grid,
+                                                    ep::EvolutionParams;
+                                                    rows::Int=4)
+    vef, q_radial, p_radial, q_vef_term, p_vef_term =
+        horizon_energy_density_extrapolated_components(st, g, ep; rows)
+    return vef, q_radial .+ p_radial .+ q_vef_term .+ p_vef_term
 end

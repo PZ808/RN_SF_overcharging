@@ -37,6 +37,10 @@ fit_vmax_override = length(ARGS) >= 12 ? real_argument(12, NaN) : NaN
 uef1 = length(ARGS) >= 13 ? real_argument(13, 1000.0) : 1000.0
 envelope_mode = length(ARGS) >= 14 ? string_argument(14, "gaussian") : "gaussian"
 pulse_width = length(ARGS) >= 15 ? real_argument(15, 4.0) : 4.0
+adaptive_passes = length(ARGS) >= 16 ? integer_argument(16, 2) : 2
+adaptive_max_points = length(ARGS) >= 17 ? integer_argument(17, max(nv, 1200)) : max(nv, 1200)
+extractor_mode = length(ARGS) >= 18 ? string_argument(18, "row") : "row"
+extractor_rows = length(ARGS) >= 19 ? integer_argument(19, 4) : 4
 
 ep = EvolutionParams(
     rn = RNParams(1.0, q0),
@@ -47,7 +51,43 @@ ep = EvolutionParams(
     width = pulse_width,
 )
 
-grid = if grid_mode == "compact"
+envelope_function = if envelope_mode == "gaussian"
+    gaussian_envelope
+elseif envelope_mode == "gp-bump"
+    gp2025_bump_envelope
+else
+    throw(ArgumentError("envelope_mode must be gaussian or gp-bump"))
+end
+
+adaptive_summaries = FixedBackgroundVRefinementSummary{Float64}[]
+
+if grid_mode == "adaptive"
+    refinement_vmax = isfinite(fit_vmax_override) ? fit_vmax_override : vmax
+    refinement_config = FixedBackgroundVRefinementConfig(
+        max_passes=adaptive_passes,
+        max_points=adaptive_max_points,
+        vmin=fit_vmin_floor,
+        vmax=refinement_vmax,
+        charge_relative_threshold=0.35,
+        energy_relative_threshold=0.35,
+        component_relative_threshold=0.35,
+        scalar_relative_threshold=0.35,
+        residual_threshold=Inf,
+    )
+    state, grid, adaptive_summaries =
+        evolve_fixed_background_v_adaptive(
+            ep;
+            nu,
+            nv,
+            u0=-1.0,
+            u1,
+            Vef0=0.0,
+            Vef1=vmax,
+            envelope=envelope_function,
+            config=refinement_config,
+        )
+else
+    grid = if grid_mode == "compact"
     v0 = compact_v_from_ef_v(0.0, ep.rn)
     v1 = compact_v_from_ef_v(vmax, ep.rn)
     compact_mrt_grid(ep.rn; nu, nv, u0=-1.0, v0=v0, u1, v1)
@@ -56,24 +96,32 @@ elseif grid_mode == "ef-uniform"
 elseif grid_mode == "ef-uv"
     ef_uv_mrt_grid(ep.rn; nu, nv, Uef0=0.0, Uef1=uef1, Vef0=0.0, Vef1=vmax)
 else
-    throw(ArgumentError("grid_mode must be compact, ef-uniform, or ef-uv"))
+    throw(ArgumentError("grid_mode must be compact, ef-uniform, ef-uv, or adaptive"))
 end
-state = if envelope_mode == "gaussian"
-    initialize_state(grid, ep)
-elseif envelope_mode == "gp-bump"
-    initialize_gp2025_bump_state(grid, ep)
-else
-    throw(ArgumentError("envelope_mode must be gaussian or gp-bump"))
+    state = initialize_state(grid, ep; envelope=envelope_function)
+    evolve!(state, grid, ep)
 end
-evolve!(state, grid, ep)
 ru, rv = maxwell_residuals(state, grid, ep)
 
-vef, rho = horizon_charge_density_series(state, grid, ep)
-vef_energy, rho_energy = horizon_energy_density_series(state, grid, ep)
+vef, rho = if extractor_mode == "row"
+    horizon_charge_density_series(state, grid, ep)
+elseif extractor_mode == "extrapolated"
+    horizon_charge_density_extrapolated_series(state, grid, ep; rows=extractor_rows)
+else
+    throw(ArgumentError("extractor_mode must be row or extrapolated"))
+end
+vef_energy, rho_energy = if extractor_mode == "row"
+    horizon_energy_density_series(state, grid, ep)
+else
+    horizon_energy_density_extrapolated_series(state, grid, ep; rows=extractor_rows)
+end
 vef_energy_direct, rho_energy_direct =
     horizon_energy_density_direct_series(state, grid, ep)
-vef_components, e_qr, e_pr, e_qv, e_pv =
+vef_components, e_qr, e_pr, e_qv, e_pv = if extractor_mode == "row"
     horizon_energy_density_divided_components(state, grid, ep)
+else
+    horizon_energy_density_extrapolated_components(state, grid, ep; rows=extractor_rows)
+end
 finite_charge = isfinite.(vef) .& isfinite.(rho) .& (vef .> 0) .& (abs.(rho) .> 0)
 finite_energy = isfinite.(vef_energy) .& isfinite.(rho_energy) .&
                 (vef_energy .> 0) .& (rho_energy .> 0)
@@ -116,7 +164,25 @@ println("# q0 = ", q0, ", eQ0 = ", eQ0, ", amplitude = ", amplitude,
         fit_vmin_floor, ", u1 = ", u1, ", fit_xmax_quantile = ",
         fit_xmax_quantile, ", grid_mode = ", grid_mode,
         ", fit_vmax_override = ", fit_vmax_override, ", Uef1 = ", uef1,
-        ", envelope_mode = ", envelope_mode, ", pulse_width = ", pulse_width)
+        ", envelope_mode = ", envelope_mode, ", pulse_width = ", pulse_width,
+        ", adaptive_passes = ", adaptive_passes,
+        ", adaptive_max_points = ", adaptive_max_points,
+        ", extractor_mode = ", extractor_mode,
+        ", extractor_rows = ", extractor_rows)
+if !isempty(adaptive_summaries)
+    println("adaptive summaries:")
+    for summary in adaptive_summaries
+        println("  pass=", summary.pass,
+                " nv=", summary.nv,
+                " flagged=", summary.flagged_intervals,
+                " max_indicator=", summary.max_indicator,
+                " max_charge=", summary.max_charge_indicator,
+                " max_energy=", summary.max_energy_indicator,
+                " max_component=", summary.max_component_indicator,
+                " max_scalar=", summary.max_scalar_indicator,
+                " max_residual=", summary.max_residual_indicator)
+    end
+end
 println("charge samples = ", length(vef_charge))
 println("charge fit samples = ", nfit)
 println("energy samples = ", length(vef_energy))

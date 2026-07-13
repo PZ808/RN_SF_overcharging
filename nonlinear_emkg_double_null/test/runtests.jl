@@ -1217,6 +1217,52 @@ end
     @test rho_energy[finite] ≈ (q_radial .+ p_radial .+ q_vef .+ p_vef)[finite]
     @test all(>=(0), rho_energy[finite])
     @test all(>=(0), rho_direct)
+
+    v_ext, rho_ext = horizon_energy_density_extrapolated_series(state, grid, ep; rows=3)
+    v_ext_components, q_ext, p_ext, qv_ext, pv_ext =
+        horizon_energy_density_extrapolated_components(state, grid, ep; rows=3)
+    @test v_ext == v_ext_components
+    finite_ext = isfinite.(rho_ext)
+    @test count(finite_ext) >= length(rho_ext) - 1
+    @test rho_ext[finite_ext] ≈ (q_ext .+ p_ext .+ qv_ext .+ pv_ext)[finite_ext]
+end
+
+@testset "fixed-background V refinement utilities" begin
+    ep = EvolutionParams(
+        rn=RNParams(1.0, 1.0),
+        scalar_charge=0.6,
+        amplitude=1.0e-5,
+        omega=0.0,
+        center=20.0,
+        width=4.0,
+    )
+    config = FixedBackgroundVRefinementConfig(
+        max_passes=1,
+        max_points=40,
+        vmin=20.0,
+        vmax=70.0,
+        charge_relative_threshold=0.25,
+        energy_relative_threshold=0.25,
+        component_relative_threshold=0.25,
+        scalar_relative_threshold=0.25,
+    )
+    state, grid, summaries = evolve_fixed_background_v_adaptive(
+        ep;
+        nu=16,
+        nv=24,
+        u0=-1.0,
+        u1=-1.0e-4,
+        Vef0=0.0,
+        Vef1=80.0,
+        config,
+    )
+
+    @test state isa State
+    @test grid isa Grid
+    @test 1 <= length(summaries) <= 2
+    @test summaries[1].nv == 24
+    @test length(grid.v) <= config.max_points
+    @test issorted([NonlinearEMKGDoubleNull.ef_v_from_mrt(v, ep.rn) for v in grid.v])
 end
 
 @testset "adaptive MRT one-step advance" begin
