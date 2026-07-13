@@ -14,6 +14,15 @@ function quantile_like(x, q)
     return xs[k]
 end
 
+function safe_fit_power_law(x, y; xmin=nothing, xmax=nothing)
+    try
+        return fit_power_law(x, y; xmin, xmax)
+    catch err
+        err isa ArgumentError || rethrow()
+        return NaN, NaN, 0
+    end
+end
+
 # Charged-sector research diagnostic from Gelles/Pretorius arXiv:2503.04881:
 # on extremal RN, the horizon charge density scales as
 #   rho_Q ~ V_EF^(1 - 2s)
@@ -41,6 +50,10 @@ adaptive_passes = length(ARGS) >= 16 ? integer_argument(16, 2) : 2
 adaptive_max_points = length(ARGS) >= 17 ? integer_argument(17, max(nv, 1200)) : max(nv, 1200)
 extractor_mode = length(ARGS) >= 18 ? string_argument(18, "row") : "row"
 extractor_rows = length(ARGS) >= 19 ? integer_argument(19, 4) : 4
+patch_refinement_factor = length(ARGS) >= 20 ? integer_argument(20, 4) : 4
+patch_vmin_override = length(ARGS) >= 21 ? real_argument(21, NaN) : NaN
+patch_vmax_override = length(ARGS) >= 22 ? real_argument(22, NaN) : NaN
+patch_u_refinement_factor = length(ARGS) >= 23 ? integer_argument(23, 1) : 1
 
 ep = EvolutionParams(
     rn = RNParams(1.0, q0),
@@ -60,6 +73,7 @@ else
 end
 
 adaptive_summaries = FixedBackgroundVRefinementSummary{Float64}[]
+patch_result = nothing
 
 if grid_mode == "adaptive"
     refinement_vmax = isfinite(fit_vmax_override) ? fit_vmax_override : vmax
@@ -86,6 +100,27 @@ if grid_mode == "adaptive"
             envelope=envelope_function,
             config=refinement_config,
         )
+elseif grid_mode == "patch"
+    refinement_vmax = isfinite(fit_vmax_override) ? fit_vmax_override : vmax
+    patch_vmin = isfinite(patch_vmin_override) ? patch_vmin_override : fit_vmin_floor
+    patch_vmax = isfinite(patch_vmax_override) ? patch_vmax_override : refinement_vmax
+    v0 = compact_v_from_ef_v(0.0, ep.rn)
+    v1 = compact_v_from_ef_v(vmax, ep.rn)
+    coarse_grid = compact_mrt_grid(ep.rn; nu, nv, u0=-1.0, v0=v0, u1, v1)
+    coarse_state = initialize_state(coarse_grid, ep; envelope=envelope_function)
+    evolve!(coarse_state, coarse_grid, ep)
+    patch_result = evolve_fixed_background_v_patch(
+        coarse_state,
+        coarse_grid,
+        ep;
+        vmin=patch_vmin,
+        vmax=patch_vmax,
+        refinement_factor=patch_refinement_factor,
+        u_refinement_factor=patch_u_refinement_factor,
+        envelope=envelope_function,
+    )
+    state = patch_result.state
+    grid = patch_result.grid
 else
     grid = if grid_mode == "compact"
     v0 = compact_v_from_ef_v(0.0, ep.rn)
@@ -96,7 +131,7 @@ elseif grid_mode == "ef-uniform"
 elseif grid_mode == "ef-uv"
     ef_uv_mrt_grid(ep.rn; nu, nv, Uef0=0.0, Uef1=uef1, Vef0=0.0, Vef1=vmax)
 else
-    throw(ArgumentError("grid_mode must be compact, ef-uniform, ef-uv, or adaptive"))
+    throw(ArgumentError("grid_mode must be compact, ef-uniform, ef-uv, adaptive, or patch"))
 end
     state = initialize_state(grid, ep; envelope=envelope_function)
     evolve!(state, grid, ep)
@@ -138,14 +173,14 @@ rho_energy_direct = rho_energy_direct[finite_energy_direct]
 vmin = max(fit_vmin_floor, quantile_like(vef_charge, fit_quantile))
 vmax_fit = isfinite(fit_vmax_override) ? fit_vmax_override :
            quantile_like(vef_charge, fit_xmax_quantile)
-slope, intercept, nfit = fit_power_law(vef_charge, rho_abs; xmin=vmin, xmax=vmax_fit)
+slope, intercept, nfit = safe_fit_power_law(vef_charge, rho_abs; xmin=vmin, xmax=vmax_fit)
 s = conformal_weight_s(ep.scalar_charge * ep.rn.Q0)
 target = 1 - 2s
 energy_target = isapprox(abs(ep.rn.Q0), ep.rn.M) ? 2 - 2s : -4s
 energy_slope, energy_intercept, energy_nfit =
-    fit_power_law(vef_energy, rho_energy; xmin=vmin, xmax=vmax_fit)
+    safe_fit_power_law(vef_energy, rho_energy; xmin=vmin, xmax=vmax_fit)
 energy_direct_slope, energy_direct_intercept, energy_direct_nfit =
-    fit_power_law(vef_energy_direct, rho_energy_direct; xmin=vmin, xmax=vmax_fit)
+    safe_fit_power_law(vef_energy_direct, rho_energy_direct; xmin=vmin, xmax=vmax_fit)
 late_mask = (vef_charge .>= vmin) .& (vef_charge .<= vmax_fit)
 late = rho_abs[late_mask]
 plateau_ratio = maximum(late) / minimum(late)
@@ -153,7 +188,8 @@ late_signed = rho_charge[late_mask]
 dominant_sign = count(>=(0), late_signed) >= count(<(0), late_signed) ? 1.0 : -1.0
 sign_mask = late_mask .& (dominant_sign .* rho_charge .> 0)
 signed_slope = count(sign_mask) >= 2 ?
-               fit_power_law(vef_charge[sign_mask], dominant_sign .* rho_charge[sign_mask])[1] :
+               safe_fit_power_law(vef_charge[sign_mask],
+                                  dominant_sign .* rho_charge[sign_mask])[1] :
                NaN
 signed_late = dominant_sign .* rho_charge[sign_mask]
 signed_ratio = isempty(signed_late) ? NaN : maximum(signed_late) / minimum(signed_late)
@@ -168,7 +204,11 @@ println("# q0 = ", q0, ", eQ0 = ", eQ0, ", amplitude = ", amplitude,
         ", adaptive_passes = ", adaptive_passes,
         ", adaptive_max_points = ", adaptive_max_points,
         ", extractor_mode = ", extractor_mode,
-        ", extractor_rows = ", extractor_rows)
+        ", extractor_rows = ", extractor_rows,
+        ", patch_refinement_factor = ", patch_refinement_factor,
+        ", patch_vmin_override = ", patch_vmin_override,
+        ", patch_vmax_override = ", patch_vmax_override,
+        ", patch_u_refinement_factor = ", patch_u_refinement_factor)
 if !isempty(adaptive_summaries)
     println("adaptive summaries:")
     for summary in adaptive_summaries
@@ -182,6 +222,15 @@ if !isempty(adaptive_summaries)
                 " max_scalar=", summary.max_scalar_indicator,
                 " max_residual=", summary.max_residual_indicator)
     end
+end
+if patch_result !== nothing
+    println("patch summary:")
+    println("  coarse_start = ", patch_result.coarse_start,
+            ", coarse_stop = ", patch_result.coarse_stop,
+            ", patch_nv = ", length(patch_result.grid.v),
+            ", patch_nu = ", length(patch_result.grid.u),
+            ", v_refinement_factor = ", patch_result.v_refinement_factor,
+            ", u_refinement_factor = ", patch_result.u_refinement_factor)
 end
 println("charge samples = ", length(vef_charge))
 println("charge fit samples = ", nfit)

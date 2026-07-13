@@ -57,6 +57,15 @@ struct FixedBackgroundVRefinementSummary{T<:Real}
     max_residual_indicator::T
 end
 
+struct FixedBackgroundPatchResult{T<:Real}
+    state::State{T}
+    grid::Grid{T}
+    coarse_start::Int
+    coarse_stop::Int
+    v_refinement_factor::Int
+    u_refinement_factor::Int
+end
+
 function relative_indicator(a, b, floor)
     if !(isfinite(a) && isfinite(b))
         return zero(promote_type(typeof(a), typeof(b), typeof(floor)))
@@ -246,4 +255,149 @@ function evolve_fixed_background_v_adaptive(
     end
 
     return state, grid, summaries
+end
+
+function linear_interpolate_series(x::AbstractVector, y::AbstractVector, xq)
+    length(x) == length(y) || throw(ArgumentError("x and y must have matching lengths"))
+    lo, hi = x[firstindex(x)], x[lastindex(x)]
+    scale = max(abs(float(lo)), abs(float(hi)), abs(float(xq)), 1.0)
+    tol = 100 * eps(scale)
+    if xq < lo
+        xq >= lo - tol ||
+            throw(ArgumentError("query point outside interpolation range"))
+        return y[firstindex(y)]
+    elseif xq > hi
+        xq <= hi + tol ||
+            throw(ArgumentError("query point outside interpolation range"))
+        return y[lastindex(y)]
+    end
+    idx = searchsortedlast(x, xq)
+    if idx == lastindex(x)
+        return y[idx]
+    end
+    idx = max(idx, firstindex(x))
+    x0, x1 = x[idx], x[idx + 1]
+    x1 == x0 && return y[idx]
+    weight = (xq - x0) / (x1 - x0)
+    return (1 - weight) * y[idx] + weight * y[idx + 1]
+end
+
+function refined_patch_vef(vef::AbstractVector, start_index::Int, stop_index::Int,
+                           refinement_factor::Int)
+    1 <= start_index < stop_index <= length(vef) ||
+        throw(ArgumentError("patch indices must satisfy 1 <= start < stop <= nv"))
+    refinement_factor >= 1 || throw(ArgumentError("refinement_factor must be positive"))
+    refined = eltype(vef)[]
+    for j in start_index:stop_index-1
+        left, right = vef[j], vef[j + 1]
+        for sub in 0:refinement_factor-1
+            push!(refined, left + (right - left) * sub / refinement_factor)
+        end
+    end
+    push!(refined, vef[stop_index])
+    return refined
+end
+
+function refined_axis(values::AbstractVector, refinement_factor::Int)
+    refinement_factor >= 1 || throw(ArgumentError("refinement_factor must be positive"))
+    refined = eltype(values)[]
+    for i in firstindex(values):lastindex(values)-1
+        left, right = values[i], values[i + 1]
+        for sub in 0:refinement_factor-1
+            push!(refined, left + (right - left) * sub / refinement_factor)
+        end
+    end
+    push!(refined, last(values))
+    return refined
+end
+
+function fixed_background_patch_indices(g::Grid, ep::EvolutionParams, vmin, vmax)
+    vef = [ef_v_from_mrt(v, ep.rn) for v in g.v]
+    vmin <= vmax || throw(ArgumentError("vmin must be <= vmax"))
+    start_index = searchsortedlast(vef, vmin)
+    start_index = clamp(start_index, firstindex(vef), lastindex(vef) - 1)
+    stop_index = searchsortedfirst(vef, vmax)
+    stop_index = clamp(stop_index, start_index + 1, lastindex(vef))
+    return start_index, stop_index
+end
+
+function evolve_fixed_background_v_patch(
+    coarse_state::State,
+    coarse_grid::Grid,
+    ep::EvolutionParams;
+    vmin,
+    vmax,
+    refinement_factor::Int=4,
+    u_refinement_factor::Int=1,
+    envelope=gaussian_envelope,
+)
+    start_index, stop_index = fixed_background_patch_indices(coarse_grid, ep, vmin, vmax)
+    coarse_vef = [ef_v_from_mrt(v, ep.rn) for v in coarse_grid.v]
+    patch_vef = refined_patch_vef(coarse_vef, start_index, stop_index,
+                                  refinement_factor)
+    patch_u = refined_axis(coarse_grid.u, u_refinement_factor)
+    patch_grid = Grid(patch_u,
+                      [compact_v_from_ef_v(V, ep.rn) for V in patch_vef])
+    boundary_vef = sort(unique(vcat(coarse_vef[begin:start_index], patch_vef)))
+    boundary_grid = Grid(copy(coarse_grid.u),
+                         [compact_v_from_ef_v(V, ep.rn) for V in boundary_vef])
+    boundary_state = initialize_state(boundary_grid, ep; envelope)
+    patch_state = State(promote_type(eltype(coarse_grid.u), eltype(coarse_state.xi)),
+                        length(patch_grid.u), length(patch_grid.v))
+
+    fields = (:xi, :pi, :Au, :Av, :Q)
+    for field in fields
+        coarse_values = getfield(coarse_state, field)
+        patch_values = getfield(patch_state, field)
+        boundary_values = getfield(boundary_state, field)
+        for i in eachindex(patch_grid.u)
+            patch_values[i, firstindex(patch_grid.v)] =
+                linear_interpolate_series(coarse_grid.u, coarse_values[:, start_index],
+                                          patch_grid.u[i])
+        end
+        for j in eachindex(patch_grid.v)
+            patch_values[firstindex(patch_grid.u), j] =
+                linear_interpolate_series(boundary_vef,
+                                          boundary_values[firstindex(boundary_grid.u), :],
+                                          patch_vef[j])
+        end
+    end
+
+    evolve!(patch_state, patch_grid, ep)
+    return FixedBackgroundPatchResult(
+        patch_state,
+        patch_grid,
+        start_index,
+        stop_index,
+        refinement_factor,
+        u_refinement_factor,
+    )
+end
+
+function fixed_background_patch_parent_errors(
+    patch::FixedBackgroundPatchResult,
+    coarse_state::State,
+)
+    coarse_rows = axes(coarse_state.xi, 1)
+    coarse_cols = patch.coarse_start:patch.coarse_stop
+    patch_rows = firstindex(patch.grid.u):patch.u_refinement_factor:lastindex(patch.grid.u)
+    patch_cols = firstindex(patch.grid.v):patch.v_refinement_factor:lastindex(patch.grid.v)
+
+    length(patch_rows) == length(coarse_rows) ||
+        throw(ArgumentError("patch parent U nodes do not match coarse U nodes"))
+    length(patch_cols) == length(coarse_cols) ||
+        throw(ArgumentError("patch parent V nodes do not match coarse V nodes"))
+
+    return (;
+        xi=maximum(abs.(patch.state.xi[patch_rows, patch_cols] .-
+                        coarse_state.xi[coarse_rows, coarse_cols])),
+        pi=maximum(abs.(patch.state.pi[patch_rows, patch_cols] .-
+                        coarse_state.pi[coarse_rows, coarse_cols])),
+        Au=maximum(abs.(patch.state.Au[patch_rows, patch_cols] .-
+                        coarse_state.Au[coarse_rows, coarse_cols])),
+        Av=maximum(abs.(patch.state.Av[patch_rows, patch_cols] .-
+                        coarse_state.Av[coarse_rows, coarse_cols])),
+        Q=maximum(abs.(patch.state.Q[patch_rows, patch_cols] .-
+                       coarse_state.Q[coarse_rows, coarse_cols])),
+    )
 end

@@ -1263,6 +1263,57 @@ end
     @test summaries[1].nv == 24
     @test length(grid.v) <= config.max_points
     @test issorted([NonlinearEMKGDoubleNull.ef_v_from_mrt(v, ep.rn) for v in grid.v])
+
+    coarse_grid = compact_mrt_grid(
+        ep.rn;
+        nu=16,
+        nv=24,
+        u0=-1.0,
+        u1=-1.0e-4,
+        v0=compact_v_from_ef_v(0.0, ep.rn),
+        v1=compact_v_from_ef_v(80.0, ep.rn),
+    )
+    coarse_state = initialize_state(coarse_grid, ep)
+    evolve!(coarse_state, coarse_grid, ep)
+    identity_patch = evolve_fixed_background_v_patch(
+        coarse_state,
+        coarse_grid,
+        ep;
+        vmin=20.0,
+        vmax=60.0,
+        refinement_factor=1,
+        u_refinement_factor=1,
+    )
+    coarse_range = identity_patch.coarse_start:identity_patch.coarse_stop
+    @test identity_patch.grid.u == coarse_grid.u
+    @test identity_patch.grid.v ≈ coarse_grid.v[coarse_range]
+    identity_errors = fixed_background_patch_parent_errors(identity_patch, coarse_state)
+    @test identity_errors.xi < 1.0e-13
+    @test identity_errors.pi < 1.0e-13
+    @test identity_errors.Au < 1.0e-8
+    @test identity_errors.Av < 1.0e-7
+    @test identity_errors.Q == 0
+
+    patch = evolve_fixed_background_v_patch(
+        coarse_state,
+        coarse_grid,
+        ep;
+        vmin=20.0,
+        vmax=60.0,
+        refinement_factor=3,
+        u_refinement_factor=2,
+    )
+    @test patch.state isa State
+    @test first(patch.grid.u) == first(coarse_grid.u)
+    @test last(patch.grid.u) == last(coarse_grid.u)
+    @test length(patch.grid.u) == 2 * (length(coarse_grid.u) - 1) + 1
+    @test length(patch.grid.v) ==
+          3 * (patch.coarse_stop - patch.coarse_start) + 1
+    @test patch.v_refinement_factor == 3
+    @test patch.u_refinement_factor == 2
+    v_patch, rho_patch = horizon_charge_density_series(patch.state, patch.grid, ep)
+    @test issorted(v_patch)
+    @test any(isfinite, rho_patch)
 end
 
 @testset "adaptive MRT one-step advance" begin
