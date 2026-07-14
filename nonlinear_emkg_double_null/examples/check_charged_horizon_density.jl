@@ -23,6 +23,38 @@ function safe_fit_power_law(x, y; xmin=nothing, xmax=nothing)
     end
 end
 
+function safe_window_ratio(y, mask)
+    samples = y[mask]
+    isempty(samples) && return NaN
+    return maximum(samples) / minimum(samples)
+end
+
+function fit_quality_label(nfit; minimum_samples=6)
+    if nfit == 0
+        return "none"
+    elseif nfit < minimum_samples
+        return "undersampled"
+    end
+    return "ok"
+end
+
+function sign_change_count(y, mask)
+    samples = y[mask]
+    length(samples) < 2 && return 0
+    signs = sign.(samples)
+    count(signs[k] != 0 && signs[k + 1] != 0 && signs[k] != signs[k + 1]
+          for k in 1:length(signs)-1)
+end
+
+function window_extrema(x, y, mask)
+    samples = findall(mask)
+    isempty(samples) && return (NaN, NaN, NaN, NaN)
+    values = y[samples]
+    imin = samples[argmin(values)]
+    imax = samples[argmax(values)]
+    return x[imin], y[imin], x[imax], y[imax]
+end
+
 # Charged-sector research diagnostic from Gelles/Pretorius arXiv:2503.04881:
 # on extremal RN, the horizon charge density scales as
 #   rho_Q ~ V_EF^(1 - 2s)
@@ -177,13 +209,13 @@ slope, intercept, nfit = safe_fit_power_law(vef_charge, rho_abs; xmin=vmin, xmax
 s = conformal_weight_s(ep.scalar_charge * ep.rn.Q0)
 target = 1 - 2s
 energy_target = isapprox(abs(ep.rn.Q0), ep.rn.M) ? 2 - 2s : -4s
-energy_slope, energy_intercept, energy_nfit =
+energy_divided_slope, energy_divided_intercept, energy_divided_nfit =
     safe_fit_power_law(vef_energy, rho_energy; xmin=vmin, xmax=vmax_fit)
 energy_direct_slope, energy_direct_intercept, energy_direct_nfit =
     safe_fit_power_law(vef_energy_direct, rho_energy_direct; xmin=vmin, xmax=vmax_fit)
 late_mask = (vef_charge .>= vmin) .& (vef_charge .<= vmax_fit)
 late = rho_abs[late_mask]
-plateau_ratio = maximum(late) / minimum(late)
+plateau_ratio = safe_window_ratio(rho_abs, late_mask)
 late_signed = rho_charge[late_mask]
 dominant_sign = count(>=(0), late_signed) >= count(<(0), late_signed) ? 1.0 : -1.0
 sign_mask = late_mask .& (dominant_sign .* rho_charge .> 0)
@@ -191,8 +223,12 @@ signed_slope = count(sign_mask) >= 2 ?
                safe_fit_power_law(vef_charge[sign_mask],
                                   dominant_sign .* rho_charge[sign_mask])[1] :
                NaN
-signed_late = dominant_sign .* rho_charge[sign_mask]
-signed_ratio = isempty(signed_late) ? NaN : maximum(signed_late) / minimum(signed_late)
+signed_ratio = safe_window_ratio(dominant_sign .* rho_charge, sign_mask)
+rho_min_v, rho_min, rho_max_v, rho_max =
+    window_extrema(vef_charge, rho_charge, late_mask)
+rho_abs_min_v, rho_abs_min, rho_abs_max_v, rho_abs_max =
+    window_extrema(vef_charge, rho_abs, late_mask)
+rho_sign_changes = sign_change_count(rho_charge, late_mask)
 
 println("# q0 = ", q0, ", eQ0 = ", eQ0, ", amplitude = ", amplitude,
         ", Vmax = ", vmax, ", nu = ", nu, ", nv = ", nv,
@@ -233,22 +269,29 @@ if patch_result !== nothing
             ", u_refinement_factor = ", patch_result.u_refinement_factor)
 end
 println("charge samples = ", length(vef_charge))
-println("charge fit samples = ", nfit)
-println("energy samples = ", length(vef_energy))
-println("energy fit samples = ", energy_nfit)
+println("charge fit samples = ", nfit, " (", fit_quality_label(nfit), ")")
+println("divided-energy samples = ", length(vef_energy))
+println("divided-energy fit samples = ", energy_divided_nfit,
+        " (", fit_quality_label(energy_divided_nfit), ")")
 println("direct-energy samples = ", length(vef_energy_direct))
-println("direct-energy fit samples = ", energy_direct_nfit)
+println("direct-energy fit samples = ", energy_direct_nfit,
+        " (", fit_quality_label(energy_direct_nfit), ")")
 println("fit window V_EF = ", (vmin, vmax_fit))
 println("eQ0 = ", ep.scalar_charge * ep.rn.Q0)
 println("s = ", s)
 println("late-time |rho_Q| slope = ", slope)
 println("late-time sign-coherent rho_Q slope = ", signed_slope)
 println("linear target slope 1 - 2s = ", target)
-println("late-time rho_E slope = ", energy_slope)
-println("late-time rho_E direct-check slope = ", energy_direct_slope)
+println("late-time rho_E direct slope = ", energy_direct_slope)
+println("late-time rho_E divided-check slope = ", energy_divided_slope)
 println("linear target energy slope = ", energy_target)
 println("late-window plateau max/min = ", plateau_ratio)
 println("sign-coherent late-window max/min = ", signed_ratio)
+println("late-window rho_Q sign changes = ", rho_sign_changes)
+println("late-window rho_Q extrema = min(", rho_min_v, ", ", rho_min,
+        "), max(", rho_max_v, ", ", rho_max, ")")
+println("late-window |rho_Q| extrema = min(", rho_abs_min_v, ", ", rho_abs_min,
+        "), max(", rho_abs_max_v, ", ", rho_abs_max, ")")
 println("max |Maxwell-U residual| = ", maximum(abs, ru))
 println("max |Maxwell-V residual| = ", maximum(abs, rv))
 println("late samples:")
