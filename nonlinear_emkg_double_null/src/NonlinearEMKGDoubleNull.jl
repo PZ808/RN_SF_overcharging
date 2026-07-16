@@ -15,7 +15,9 @@ include("FixedBackgroundAdaptive.jl")
 export RNParams, EvolutionParams, Grid, State
 export compact_mrt_grid, ef_v_mrt_grid, ef_uv_mrt_grid, initialize_state
 export initialize_gp2025_bump_state, gaussian_envelope, gp2025_bump_envelope
-export evolve!, maxwell_residuals
+export evolve!, evolve_passive_scalar!, fill_background_potentials!
+export passive_charge_source, reconstruct_passive_charge!
+export background_Au, background_Av, maxwell_residuals
 export MetricState, einstein_backreaction_rhs!
 export NLState, initialize_nonlinear_state, evolve_nonlinear!, mrt2013_background_f
 export mrt2013_grid, mrt2013_areal_radius, mrt2013_metric_f, initialize_mrt2013_uncharged_ingoing!

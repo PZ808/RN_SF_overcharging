@@ -1227,6 +1227,61 @@ end
     @test rho_ext[finite_ext] ≈ (q_ext .+ p_ext .+ qv_ext .+ pv_ext)[finite_ext]
 end
 
+@testset "fixed-background passive scalar audit" begin
+    ep = EvolutionParams(
+        rn=RNParams(1.0, 1.0),
+        scalar_charge=0.4,
+        amplitude=1.0e-5,
+        omega=0.0,
+        center=20.0,
+        width=4.0,
+    )
+    grid = compact_mrt_grid(
+        ep.rn;
+        nu=12,
+        nv=24,
+        u0=-1.0,
+        u1=-1.0e-4,
+        v0=compact_v_from_ef_v(0.0, ep.rn),
+        v1=compact_v_from_ef_v(80.0, ep.rn),
+    )
+    electrovac = initialize_state(grid, EvolutionParams(rn=ep.rn, scalar_charge=0.0,
+                                                        amplitude=0.0, omega=0.0))
+    evolve!(electrovac, grid, EvolutionParams(rn=ep.rn, scalar_charge=0.0,
+                                              amplitude=0.0, omega=0.0))
+    analytic = State(grid)
+    fill_background_potentials!(analytic, grid, ep)
+    @test maximum(abs.(analytic.Q .- ep.rn.Q0)) == 0
+    @test maximum(abs.(analytic.Au[1, :] .- electrovac.Au[1, :])) < 2.0e-2
+    @test maximum(abs.(analytic.Av[:, 1] .- electrovac.Av[:, 1])) < 1.0e-2
+    @test maximum(abs, analytic.Av[1, :]) == 0
+    @test maximum(abs, analytic.Au[:, 1]) == 0
+
+    passive = initialize_state(grid, ep; envelope=gp2025_bump_envelope)
+    evolve_passive_scalar!(passive, grid, ep)
+    @test all(isfinite, passive.xi)
+    @test all(isfinite, passive.pi)
+    @test all(passive.Q .== ep.rn.Q0)
+    reconstruct_passive_charge!(passive, grid, ep)
+    @test all(isfinite, passive.Q)
+    @test maximum(abs.(passive.Q .- ep.rn.Q0)) > 0
+
+    weak_ep = EvolutionParams(
+        rn=ep.rn,
+        scalar_charge=ep.scalar_charge,
+        amplitude=ep.amplitude / 2,
+        omega=ep.omega,
+        center=ep.center,
+        width=ep.width,
+    )
+    weak = initialize_state(grid, weak_ep; envelope=gp2025_bump_envelope)
+    evolve_passive_scalar!(weak, grid, weak_ep)
+    reconstruct_passive_charge!(weak, grid, weak_ep)
+    strong_q = maximum(abs.(passive.Q .- ep.rn.Q0))
+    weak_q = maximum(abs.(weak.Q .- ep.rn.Q0))
+    @test 3.5 < strong_q / weak_q < 4.5
+end
+
 @testset "fixed-background V refinement utilities" begin
     ep = EvolutionParams(
         rn=RNParams(1.0, 1.0),
